@@ -12,12 +12,16 @@ import {
   equipGear,
   fightBoss,
   buySlave,
+  grantGearItem,
+  grantGladiator,
   loadState,
   openLunchbox,
   recruitDweller,
   rerollMarket,
   rushRoom,
   saveState,
+  sellGearItem,
+  sellHero,
   startRaid,
   tick,
   unassignDweller,
@@ -27,7 +31,7 @@ import {
   type Pull,
 } from "../game/engine";
 import { STORAGE_KEY } from "../game/config";
-import type { GameState, GearSlot, RoomType } from "../game/types";
+import type { GameState, GearSlot, RoomType, Tier } from "../game/types";
 
 export function useGame() {
   const [state, setState] = useState<GameState>(() => loadState());
@@ -111,6 +115,10 @@ export function useGame() {
       unequip: (dwellerId: string, slot: GearSlot) =>
         wrap((s) => unequipGear(s, dwellerId, slot)),
       claimObjective: (objId: string) => wrap((s) => claimObjective(s, objId)),
+      grantGladiator: (tier: Tier) => wrap((s) => grantGladiator(s, tier)),
+      grantGear: (defId: string) => wrap((s) => grantGearItem(s, defId)),
+      sellHero: (id: string) => wrap((s) => sellHero(s, id)),
+      sellGear: (gearItemId: string) => wrap((s) => sellGearItem(s, gearItemId)),
       clearError: () => setError(null),
       reset: () => {
         localStorage.removeItem(STORAGE_KEY);

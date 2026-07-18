@@ -6,6 +6,7 @@ import {
   CRATE_IMG,
   IMG,
   MERCENARY_TIERS,
+  ONCHAIN_LISTINGS,
   RAIDS,
   RAID_ART,
   RARITY_META,
@@ -13,6 +14,7 @@ import {
   ROOM_ART,
   TIERS,
   TIER_PORTRAIT,
+  type OnchainListing,
 } from "./game/config";
 import {
   arenaSquad,
@@ -24,6 +26,8 @@ import {
   equippedGearDefs,
   formatNum,
   gearDefOf,
+  gearSellValue,
+  heroSellValue,
   inventoryGear,
   isOnRaid,
   marketRerollCost,
@@ -47,7 +51,7 @@ function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "stronghold" | "legion" | "arena" | "raids" | "warchest";
+type Tab = "stronghold" | "legion" | "arena" | "raids" | "market";
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
@@ -110,7 +114,6 @@ export default function App() {
   const [heroId, setHeroId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Pull | null>(null);
   const [email, setEmail] = useState("");
-  const [fundAmount, setFundAmount] = useState("0.1");
 
   const assignRoom = assignRoomId ? state.rooms.find((r) => r.id === assignRoomId) : null;
   const hero = heroId ? dwellerById(state, heroId) : null;
@@ -120,13 +123,14 @@ export default function App() {
     if (pull) setReveal(pull);
   };
 
-  const onFund = async () => {
-    const result = await wallet.fundWarChest(fundAmount);
-    if (result) {
-      const usd = Number(result.amount) || 0.1;
-      actions.applyFunding(usd, result.transactionId);
-      setTab("stronghold");
-    }
+  // Buy a marketplace asset — settles cross-chain as USDT on Arbitrum via UA,
+  // then grants the asset in-game. This is the Universal Accounts economy.
+  const buyListing = async (l: OnchainListing) => {
+    const result = await wallet.fundWarChest(String(l.priceUsd));
+    if (!result) return;
+    if (l.kind === "hero" && l.tier) actions.grantGladiator(l.tier);
+    else if (l.kind === "gear" && l.defId) actions.grantGear(l.defId);
+    else if (l.kind === "boost") actions.applyFunding(Number(result.amount) || l.priceUsd, result.transactionId);
   };
 
   return (
@@ -167,12 +171,12 @@ export default function App() {
             ["legion", "🛡️ Legion"],
             ["arena", "⚔️ Arena"],
             ["raids", "🗺️ Raids"],
-            ["warchest", "🏦 War Chest"],
+            ["market", "🏛️ Market"],
           ] as const
         ).map(([id, label]) => (
           <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
             {label}
-            {id === "warchest" && state.mercenaryBoost > 0 && <i className="dot" />}
+            {id === "market" && state.mercenaryBoost > 0 && <i className="dot" />}
             {id === "legion" && state.lunchboxes > 0 && <i className="dot gift" />}
           </button>
         ))}
@@ -201,7 +205,7 @@ export default function App() {
           actions={actions}
           onAssign={(id) => setAssignRoomId(id)}
           onHero={(id) => setHeroId(id)}
-          onOpenWarChest={() => setTab("warchest")}
+          onOpenWarChest={() => setTab("market")}
           onOpenRaids={() => setTab("raids")}
         />
       )}
@@ -214,15 +218,15 @@ export default function App() {
 
       {tab === "raids" && <RaidsView state={state} now={now} actions={actions} />}
 
-      {tab === "warchest" && (
-        <WarChestView
+      {tab === "market" && (
+        <MarketView
           state={state}
+          actions={actions}
           wallet={wallet}
           email={email}
           setEmail={setEmail}
-          fundAmount={fundAmount}
-          setFundAmount={setFundAmount}
-          onFund={onFund}
+          onBuy={buyListing}
+          onHero={(id) => setHeroId(id)}
         />
       )}
 
@@ -972,50 +976,54 @@ function RevealModal({ pull, more, onAgain, onClose }: { pull: Pull; more: numbe
   );
 }
 
-// ---------------- war chest ----------------
+// ---------------- marketplace (buy on-chain via UA + sell your assets) ----------------
 
-function WarChestView({
+function MarketView({
   state,
+  actions,
   wallet,
   email,
   setEmail,
-  fundAmount,
-  setFundAmount,
-  onFund,
+  onBuy,
+  onHero,
 }: {
   state: GameState;
+  actions: Actions;
   wallet: Wallet;
   email: string;
   setEmail: (v: string) => void;
-  fundAmount: string;
-  setFundAmount: (v: string) => void;
-  onFund: () => void;
+  onBuy: (l: OnchainListing) => void;
+  onHero: (id: string) => void;
 }) {
+  const inv = inventoryGear(state);
+  const canBuy = Boolean(wallet.session && wallet.caps.particle && !wallet.busy);
+  const sellable = [...state.dwellers].sort((a, b) => TIERS[b.tier].might - TIERS[a.tier].might);
   return (
-    <section className="panel warchest">
+    <section className="panel market-view">
       <div className="wc-hero" style={{ backgroundImage: `url(${IMG.chest})` }}>
         <div className="wc-hero-veil" />
         <div className="wc-hero-body">
-          <h2>🏦 Treasury Vault</h2>
+          <h2>🏛️ Marketplace</h2>
           <p className="muted">
-            Fund the war with <strong>any-chain</strong> assets. Universal Accounts (<code>EIP-7702</code>) route value and
-            land <strong>USDT on Arbitrum</strong> — no bridge UI, no chain switch. Funding hires a permanent{" "}
-            <strong>Free Company</strong> that boosts every room.
+            Trade gladiators &amp; gear. Premium assets settle <strong>cross-chain as USDT on Arbitrum</strong> through
+            Particle <strong>Universal Accounts</strong> (<code>EIP-7702</code>) — pay from any chain, no bridge, no chain
+            switch. The whole economy runs on-chain.
           </p>
         </div>
       </div>
 
+      {/* wallet */}
       <div className="auth-box">
         {!wallet.session ? (
           <>
-            <h3>Enter the field</h3>
+            <h3>Connect to trade on-chain</h3>
             {wallet.caps.magic ? (
               <form className="email-row" onSubmit={(e) => { e.preventDefault(); if (email.trim()) void wallet.loginMagic(email.trim()); }}>
                 <input type="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
                 <button type="submit" className="btn" disabled={wallet.busy}>Magic login</button>
               </form>
             ) : (
-              <p className="muted small">Set <code>VITE_MAGIC_PUBLISHABLE_KEY</code> for email wallets.</p>
+              <p className="muted small">Set <code>VITE_MAGIC_PUBLISHABLE_KEY</code> for email login.</p>
             )}
             <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.loginInjected()}>
               Connect browser wallet
@@ -1025,52 +1033,85 @@ function WarChestView({
           <div className="session">
             <div>
               <strong>{wallet.session.method === "magic" ? "Magic" : "Wallet"} · {shortAddr(wallet.session.address)}</strong>
-              {wallet.session.email && <div className="muted small">{wallet.session.email}</div>}
               {wallet.uaAddress && <div className="muted small">UA / 7702 · {shortAddr(wallet.uaAddress)}</div>}
+              <div className="muted small">Unified balance: {wallet.totalUsd == null ? "…" : `$${wallet.totalUsd.toFixed(2)}`}</div>
             </div>
             <div className="session-actions">
-              <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.refreshBalances()}>Refresh balance</button>
+              <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.refreshBalances()}>Refresh</button>
               <button type="button" className="btn ghost" disabled={wallet.busy} onClick={() => void wallet.logout()}>Logout</button>
             </div>
           </div>
         )}
       </div>
 
-      {wallet.assets.length > 0 && (
-        <div className="assets">
-          <h3>Primary assets (unified)</h3>
-          <ul>
-            {wallet.assets.map((a) => (
-              <li key={a.tokenType}>
-                <span>{a.tokenType.toUpperCase()}</span>
-                <span>{a.amount.toFixed(4)} · ${a.amountInUSD.toFixed(2)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
+      {/* on-chain buy */}
+      <h3 className="mk-h">⚡ On-Chain Bazaar · buy with USDT (Universal Accounts → Arbitrum)</h3>
+      {!wallet.caps.particle && (
+        <p className="muted small warn">Add Particle keys in <code>.env</code> to enable live on-chain buys. Everything else plays offline.</p>
+      )}
+      <div className="listing-grid">
+        {ONCHAIN_LISTINGS.map((l) => (
+          <article key={l.id} className="listing" style={{ ["--rar" as string]: RARITY_META[l.rarity].color }}>
+            <img className="listing-img" src={l.img} alt={l.label} loading="lazy" />
+            <div className="listing-body">
+              <div className="listing-name">{l.label}</div>
+              <div className="listing-sub" style={{ color: RARITY_META[l.rarity].color }}>{l.sub}</div>
+            </div>
+            <button type="button" className="btn buy" disabled={!canBuy} onClick={() => onBuy(l)} title={canBuy ? "" : "Connect a wallet with keys to buy on-chain"}>
+              {wallet.busy ? "Routing…" : `＄${l.priceUsd.toFixed(2)} · Buy`}
+            </button>
+          </article>
+        ))}
+      </div>
+      {wallet.lastTx && (
+        <p className="tx-ok">Settled {wallet.lastTx.amount} USDT on Arbitrum · <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">View on UniversalX</a></p>
       )}
 
-      <div className="fund-box">
-        <h3>Fund War Chest → Arbitrum USDT</h3>
-        <p className="muted small">
-          Cross-chain transfer via Particle Universal Accounts (<code>useEIP7702: true</code>). Sources liquidity from your unified Primary Assets; destination chain = Arbitrum One.
-        </p>
-        <div className="email-row">
-          <input type="text" inputMode="decimal" value={fundAmount} onChange={(e) => setFundAmount(e.target.value)} aria-label="USDT amount" />
-          <button type="button" className="btn" disabled={!wallet.session || wallet.busy || !wallet.caps.particle} onClick={() => void onFund()}>
-            {wallet.busy ? "Routing…" : `Send ${fundAmount} USDT → Arb`}
-          </button>
+      {/* sell */}
+      <h3 className="mk-h">💰 Sell your assets → gold</h3>
+      <div className="sell-cols">
+        <div>
+          <h4 className="ml">Gladiators</h4>
+          <div className="sell-grid">
+            {sellable.map((d) => (
+              <div key={d.id} className="sell-item" style={{ ["--rar" as string]: RARITY[d.tier].color }}>
+                <img src={TIER_PORTRAIT[d.tier]} alt={d.name} onClick={() => onHero(d.id)} />
+                <div className="sell-info">
+                  <span className="sell-name">{d.name}</span>
+                  <span className="sell-tier" style={{ color: RARITY[d.tier].color }}>{TIERS[d.tier].name} Lv{d.level}</span>
+                </div>
+                <button type="button" className="chip-btn" disabled={state.dwellers.length <= 1} onClick={() => actions.sellHero(d.id)}>
+                  🪙 {formatNum(heroSellValue(d))}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
-        {!wallet.caps.particle && (
-          <p className="muted small warn">Add Particle keys in <code>.env</code> to enable live UA transfers. The game plays fully offline without them.</p>
-        )}
-        {wallet.lastTx && (
-          <p className="tx-ok">Funded {wallet.lastTx.amount} USDT · <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">View on UniversalX</a></p>
-        )}
+        <div>
+          <h4 className="ml">Gear ({inv.length})</h4>
+          <div className="sell-grid">
+            {inv.length === 0 && <p className="muted small">No spare gear. Open lunchboxes or buy on-chain.</p>}
+            {inv.map((item) => {
+              const g = gearDefOf(item);
+              return (
+                <div key={item.id} className="sell-item" style={{ ["--rar" as string]: RARITY_META[g.rarity].color }}>
+                  <img src={g.img} alt={g.name} />
+                  <div className="sell-info">
+                    <span className="sell-name">{g.name}</span>
+                    <span className="sell-tier" style={{ color: RARITY_META[g.rarity].color }}>+{g.might}⚔ {g.slot}</span>
+                  </div>
+                  <button type="button" className="chip-btn" onClick={() => actions.sellGear(item.id)}>
+                    🪙 {formatNum(gearSellValue(item.defId))}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div className="tiers">
-        <h3>Free Company tiers</h3>
+        <h3>Free Company tiers (on-chain boost)</h3>
         <ul>
           {MERCENARY_TIERS.map((t) => (
             <li key={t.minUsd} className={state.warChestUsd >= t.minUsd ? "earned" : ""}>

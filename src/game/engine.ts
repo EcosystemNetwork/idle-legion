@@ -4,6 +4,7 @@ import {
   FIGHT_COOLDOWN_MS,
   GEAR_BY_ID,
   GEAR_CATALOG,
+  GEAR_SELL_VALUE,
   MATCH_BONUS,
   MERCENARY_TIERS,
   RAIDS,
@@ -403,6 +404,60 @@ export function rerollMarket(state: GameState): GameState {
   const cost = marketRerollCost(state);
   if (state.gold < cost) throw new Error("Not enough gold to bring in new stock.");
   return { ...state, gold: state.gold - cost, market: rollMarket() };
+}
+
+// ---------- marketplace: grant (on-chain buy) + sell ----------
+
+/** Premium on-chain purchase — a champion/epic gladiator joins (bypasses hall cap). */
+export function grantGladiator(state: GameState, tier: Tier): GameState {
+  return { ...state, dwellers: [...state.dwellers, makeDweller(tier)] };
+}
+
+export function grantGearItem(state: GameState, defId: string): GameState {
+  if (!GEAR_BY_ID[defId]) return state;
+  return { ...state, gear: [...state.gear, { id: uid("g"), defId }] };
+}
+
+export function heroSellValue(d: Dweller): number {
+  return Math.floor(TIERS[d.tier].recruitCost * 0.4 * (1 + 0.12 * (d.level - 1)));
+}
+
+export function gearSellValue(defId: string): number {
+  const def = GEAR_BY_ID[defId];
+  return def ? GEAR_SELL_VALUE[def.rarity] : 0;
+}
+
+export function sellHero(state: GameState, id: string): GameState {
+  const d = dwellerById(state, id);
+  if (!d) return state;
+  if (state.dwellers.length <= 1) throw new Error("Keep at least one gladiator in the legion.");
+  const gold = heroSellValue(d);
+  return {
+    ...state,
+    gold: state.gold + gold,
+    totalGoldEarned: state.totalGoldEarned + gold,
+    dwellers: state.dwellers.filter((x) => x.id !== id),
+  };
+}
+
+export function sellGearItem(state: GameState, gearItemId: string): GameState {
+  const item = state.gear.find((g) => g.id === gearItemId);
+  if (!item) return state;
+  const gold = gearSellValue(item.defId);
+  const dwellers = state.dwellers.map((x) => {
+    const eq = { ...x.equipped };
+    (["weapon", "armor", "mount"] as GearSlot[]).forEach((sl) => {
+      if (eq[sl] === gearItemId) eq[sl] = null;
+    });
+    return { ...x, equipped: eq };
+  });
+  return {
+    ...state,
+    gold: state.gold + gold,
+    totalGoldEarned: state.totalGoldEarned + gold,
+    gear: state.gear.filter((g) => g.id !== gearItemId),
+    dwellers,
+  };
 }
 
 export function buildCost(type: RoomType): number {

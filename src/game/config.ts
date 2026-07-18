@@ -309,3 +309,33 @@ export const BOSSES: BossDef[] = [
 ];
 
 export const FIGHT_COOLDOWN_MS = 6000;
+
+// ---------- On-chain marketplace (settled via Universal Accounts → Arbitrum USDT) ----------
+export interface OnchainListing {
+  id: string;
+  kind: "hero" | "gear" | "boost";
+  label: string;
+  sub: string;
+  img: string;
+  priceUsd: number;
+  rarity: Rarity;
+  tier?: Tier;
+  defId?: string;
+}
+
+export const ONCHAIN_LISTINGS: OnchainListing[] = [
+  { id: "l_champ", kind: "hero", label: "Kekius Reborn", sub: "Legendary Champion gladiator", img: `${B}art/portrait-champion.jpg`, priceUsd: 0.3, rarity: "legendary", tier: "champion" },
+  { id: "l_cav", kind: "hero", label: "Steppe Raider", sub: "Epic Cavalry gladiator", img: `${B}art/portrait-cavalry.jpg`, priceUsd: 0.1, rarity: "epic", tier: "cavalry" },
+  { id: "l_blades", kind: "gear", label: "Emberforged Blades", sub: "Legendary weapon · +36 ⚔", img: `${B}art/gear-w-blades.jpg`, priceUsd: 0.2, rarity: "legendary", defId: "w_blades" },
+  { id: "l_aegis", kind: "gear", label: "Kekius Maximus Aegis", sub: "Legendary armor · +28 ⚔", img: `${B}art/gear-a-kekius.jpg`, priceUsd: 0.25, rarity: "legendary", defId: "a_kekius" },
+  { id: "l_company", kind: "boost", label: "Free Company Contract", sub: "Permanent boost to every room", img: `${B}art/controller.jpg`, priceUsd: 0.5, rarity: "epic" },
+];
+
+/** Gold a piece of gear fetches when sold back to the market. */
+export const GEAR_SELL_VALUE: Record<Rarity, number> = {
+  common: 30,
+  uncommon: 80,
+  rare: 220,
+  epic: 520,
+  legendary: 1200,
+};
