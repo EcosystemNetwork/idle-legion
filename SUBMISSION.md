@@ -11,10 +11,10 @@
 
 ## One-liner
 
-> Train a legion, raid for gold, and fund your **War Chest** with assets from *any* chain.
+> Dig an underground **stronghold**, staff its rooms with your **legion**, raid the wastes, and fund the **War Chest** with assets from *any* chain.
 > Universal Accounts route the value and land it as **USDT on Arbitrum** — one login, one balance, no bridge UI.
 
-Idle Legion is a real idle game first and a wallet demo second. The chain abstraction is felt, not shown: the player never picks a network, never bridges, never touches a gas token. They just fund mercenaries and watch their gold-per-second climb.
+A **Fallout-Shelter-style base builder × Crypto Dynasty**, with a Universal Accounts treasury. Idle Legion is a real game first and a wallet demo second. The chain abstraction is felt, not shown: the player never picks a network, never bridges, never touches a gas token. They just fund the war and watch every room's output climb.
 
 ## The problem we're attacking
 
@@ -47,11 +47,12 @@ Idle games are one of the highest-retention consumer categories. The monetizatio
 
 ## 45-second demo script
 
-1. **Play.** Land on the game. Recruit a few units, start a short raid — gold ticks up, power rises. It reads as a normal idle game.
-2. **Onboard.** Open the **War Chest** tab → log in with **email (Magic)**. No MetaMask.
-3. **See the abstraction.** The unified **Primary Assets** balance shows one multi-chain total in USD.
-4. **Move value cross-chain.** Click **Send USDT → Arb**. Universal Accounts source funds from whatever chain holds them and settle **USDT on Arbitrum** — no bridge UI, no chain switch.
-5. **Payoff + proof.** The **Mercenary boost** unlocks (permanent GPS multiplier) and a **UniversalX activity link** proves the cross-chain settlement on-chain.
+1. **Play.** Land on the **Stronghold** cutaway. Collect gold from the Gold Mine, dig a Granary and War Room, assign dwellers by aptitude (matches glow green). It reads as a base builder.
+2. **Raid.** Send an idle squad on a timed raid; claim the loot. Might rises.
+3. **Onboard.** Open the **War Chest** (Treasury Vault) → log in with **email (Magic)**. No MetaMask.
+4. **See the abstraction.** The unified **Primary Assets** balance shows one multi-chain total in USD.
+5. **Move value cross-chain.** Click **Send USDT → Arb**. Universal Accounts source funds from whatever chain holds them and settle **USDT on Arbitrum** — no bridge UI, no chain switch.
+6. **Payoff + proof.** The **Free Company** boost unlocks (permanent multiplier on every room) and a **UniversalX activity link** proves the cross-chain settlement on-chain.
 
 ## Tech
 

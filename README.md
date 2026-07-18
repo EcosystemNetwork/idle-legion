@@ -3,7 +3,9 @@
 **UXMaxx Hackathon · Universal Accounts Track**  
 Particle Network EIP-7702 · Arbitrum settlement · Magic embedded wallets
 
-> Train a legion. Raid for gold. Fund the **War Chest** with assets from *any* chain — Universal Accounts routes value and lands **USDT on Arbitrum**. One login, one balance, no bridge UI.
+> Dig an underground **stronghold**, staff its rooms with your **legion** (each dweller has an aptitude), and tap to collect gold and provisions. Send squads on **raids**, survive **incidents**, and grow a dynasty. Then fund the **War Chest** with assets from *any* chain — Universal Accounts route value and land **USDT on Arbitrum**, hiring a Free Company that boosts every room. One login, one balance, no bridge UI.
+
+**A Fallout-Shelter-style base builder × Crypto Dynasty, with a Universal Accounts treasury.**
 
 ## Why this hits the track
 
@@ -49,23 +51,25 @@ VITE_MAGIC_PUBLISHABLE_KEY=
 
 ## Demo script (judges)
 
-1. Open app → recruit units, start a short raid (feels like a normal idle game).
-2. **War Chest** tab → Magic email login (or browser wallet).
-3. Show **unified Primary Assets** balance (multi-chain, one total).
-4. Click **Send USDT → Arb** — UA sources funds from whatever chain holds Primary Assets; destination is Arbitrum USDT.
-5. Mercenary boost unlocks in-game GPS multiplier. Link opens UniversalX activity.
+1. Open app → **Stronghold** cutaway. Collect gold from the Gold Mine, dig a Granary/War Forge, assign dwellers (aptitude match glows green). Feels like a base builder.
+2. **Raids** → send an idle squad on a timed raid; claim loot.
+3. **War Chest** tab (Treasury Vault) → Magic email login (or browser wallet).
+4. Show **unified Primary Assets** balance (multi-chain, one total).
+5. Click **Send USDT → Arb** — UA sources funds from whatever chain holds Primary Assets; destination is Arbitrum USDT.
+6. **Free Company** boost unlocks — a permanent multiplier on every room. Link opens UniversalX activity.
 
 ## Architecture
 
 ```
 src/
-  game/          pure idle engine (gold, units, raids, war chest boosts)
+  game/          pure stronghold engine (rooms, dwellers, production,
+                 provisions pressure, rush/incidents, raids, war-chest boost)
   hooks/         useGame, useWallet
   lib/
     auth.ts      Magic email + injected wallet
     ua.ts        Particle Universal Account (EIP-7702) + Arbitrum transfer
     config.ts    env + Arbitrum USDT address
-  App.tsx        UI
+  App.tsx        cutaway UI (stronghold / legion / raids / war chest)
 ```
 
 ### Core UA snippet

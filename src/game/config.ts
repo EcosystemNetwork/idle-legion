@@ -1,54 +1,76 @@
-import type { RaidMission, UnitDef, UnitId } from "./types";
+import type {
+  Aptitude,
+  RaidMission,
+  RoomDef,
+  RoomType,
+  Tier,
+  TierDef,
+} from "./types";
 
-export const UNITS: Record<UnitId, UnitDef> = {
+export const STORAGE_KEY = "idle-legion-v2";
+
+export const APTITUDE_LABEL: Record<Aptitude, string> = {
+  labor: "Labor",
+  hunt: "Hunt",
+  war: "War",
+};
+
+export const APTITUDE_ICON: Record<Aptitude, string> = {
+  labor: "⛏️",
+  hunt: "🏹",
+  war: "⚔️",
+};
+
+/** Dweller tiers — recruit → champion. Each has an aptitude (SPECIAL-style). */
+export const TIERS: Record<Tier, TierDef> = {
   recruit: {
-    id: "recruit",
+    tier: "recruit",
     name: "Recruit",
     icon: "🪖",
-    baseCost: 15,
-    gps: 0.5,
-    power: 1,
-    description: "Cheap fodder. Every legion starts somewhere.",
+    aptitude: "labor",
+    output: 0.6,
+    might: 1,
+    recruitCost: 20,
   },
   spearman: {
-    id: "spearman",
+    tier: "spearman",
     name: "Spearman",
     icon: "🗡️",
-    baseCost: 100,
-    gps: 3,
-    power: 5,
-    description: "Front line. Holds the gate.",
+    aptitude: "war",
+    output: 2.4,
+    might: 6,
+    recruitCost: 120,
   },
   archer: {
-    id: "archer",
+    tier: "archer",
     name: "Archer",
     icon: "🏹",
-    baseCost: 500,
-    gps: 12,
-    power: 12,
-    description: "Rains steel. Softens the charge.",
+    aptitude: "hunt",
+    output: 7,
+    might: 14,
+    recruitCost: 550,
   },
   cavalry: {
-    id: "cavalry",
+    tier: "cavalry",
     name: "Cavalry",
     icon: "🐎",
-    baseCost: 2500,
-    gps: 50,
-    power: 40,
-    description: "Fast strike. Breaks flanks.",
+    aptitude: "labor",
+    output: 22,
+    might: 44,
+    recruitCost: 2600,
   },
   champion: {
-    id: "champion",
+    tier: "champion",
     name: "Champion",
     icon: "👑",
-    baseCost: 12000,
-    gps: 200,
-    power: 150,
-    description: "Named killers. Expensive. Worth it.",
+    aptitude: "war",
+    output: 70,
+    might: 170,
+    recruitCost: 13000,
   },
 };
 
-export const UNIT_ORDER: UnitId[] = [
+export const TIER_ORDER: Tier[] = [
   "recruit",
   "spearman",
   "archer",
@@ -56,23 +78,100 @@ export const UNIT_ORDER: UnitId[] = [
   "champion",
 ];
 
+/** Room blueprints dug into the mountain. */
+export const ROOMS: Record<RoomType, RoomDef> = {
+  hall: {
+    type: "hall",
+    name: "Great Hall",
+    icon: "🏛️",
+    aptitude: null,
+    produces: null,
+    capacityPerLevel: 0, // houses dwellers passively; no worker slots
+    storePerLevel: 0,
+    buildCost: 0,
+    description: "Home of the legion. Upgrade to house more dwellers.",
+    unique: true,
+  },
+  mine: {
+    type: "mine",
+    name: "Gold Mine",
+    icon: "⛏️",
+    aptitude: "labor",
+    produces: "gold",
+    capacityPerLevel: 2,
+    storePerLevel: 240,
+    buildCost: 120,
+    description: "Labor dwellers dig gold from the deep veins.",
+  },
+  granary: {
+    type: "granary",
+    name: "Granary",
+    icon: "🌾",
+    aptitude: "hunt",
+    produces: "provisions",
+    capacityPerLevel: 2,
+    storePerLevel: 160,
+    buildCost: 200,
+    description: "Hunters stock provisions. A hungry legion mines slower.",
+  },
+  forge: {
+    type: "forge",
+    name: "War Forge",
+    icon: "🔨",
+    aptitude: "war",
+    produces: "might",
+    capacityPerLevel: 2,
+    storePerLevel: 0,
+    buildCost: 450,
+    description: "War dwellers forge arms — passive might for raids.",
+  },
+  warroom: {
+    type: "warroom",
+    name: "War Room",
+    icon: "🗺️",
+    aptitude: "war",
+    produces: null,
+    capacityPerLevel: 0,
+    storePerLevel: 0,
+    buildCost: 300,
+    description: "Plan raids on the wastes beyond the mountain.",
+    unique: true,
+  },
+  warchest: {
+    type: "warchest",
+    name: "Treasury Vault",
+    icon: "🏦",
+    aptitude: null,
+    produces: null,
+    capacityPerLevel: 0,
+    storePerLevel: 0,
+    buildCost: 0,
+    description:
+      "The on-chain vault. Fund it with any-chain assets — Universal Accounts settle USDT on Arbitrum and hire a Free Company.",
+    unique: true,
+  },
+};
+
+/** Rooms the player can dig (hall/warchest are pre-placed). */
+export const BUILDABLE: RoomType[] = ["mine", "granary", "forge", "warroom"];
+
 export const RAIDS: RaidMission[] = [
   {
     id: "outskirts",
     name: "Outskirts Patrol",
     icon: "🏕️",
     durationSec: 20,
-    minPower: 5,
-    goldReward: 40,
-    description: "Scavenge the village edge.",
+    minMight: 6,
+    goldReward: 90,
+    description: "Scavenge the village edge for coin.",
   },
   {
     id: "trade_road",
     name: "Trade Road Ambush",
     icon: "🛤️",
     durationSec: 45,
-    minPower: 40,
-    goldReward: 180,
+    minMight: 45,
+    goldReward: 380,
     description: "Light caravan, heavy coin.",
   },
   {
@@ -80,31 +179,45 @@ export const RAIDS: RaidMission[] = [
     name: "Hill Fort Siege",
     icon: "🏰",
     durationSec: 90,
-    minPower: 150,
-    goldReward: 700,
-    description: "Crack the walls. Claim the keep.",
+    minMight: 160,
+    goldReward: 1500,
+    description: "Crack the walls, claim the keep.",
   },
   {
     id: "capital",
-    name: "Capital Raid",
+    name: "Rival Dynasty Raid",
     icon: "🔥",
     durationSec: 180,
-    minPower: 500,
-    goldReward: 2800,
+    minMight: 550,
+    goldReward: 6200,
     description: "All-in on the prize city.",
   },
 ];
 
-export const BARRACKS_BASE_CAP = 500;
-export const BARRACKS_CAP_PER_LEVEL = 750;
-export const BARRACKS_UPGRADE_BASE = 250;
+/** Provisions upkeep per dweller per second. */
+export const UPKEEP_PER_DWELLER = 0.05;
+/** Production penalty when provisions are exhausted. */
+export const STARVING_PENALTY = 0.5;
+/** Aptitude-match production bonus. */
+export const MATCH_BONUS = 0.25;
 
-/** On-chain war chest: fund this much USD → permanent mercenary boost tier */
+/** On-chain war chest: fund this much USD → permanent Free Company boost tier. */
 export const MERCENARY_TIERS = [
-  { minUsd: 0.1, boost: 0.15, label: "Scout Mercs (+15% GPS)" },
-  { minUsd: 0.5, boost: 0.35, label: "Company (+35% GPS)" },
-  { minUsd: 1, boost: 0.6, label: "Free Company (+60% GPS)" },
-  { minUsd: 5, boost: 1.25, label: "War Host (+125% GPS)" },
+  { minUsd: 0.1, boost: 0.15, label: "Scout Mercs (+15% output)" },
+  { minUsd: 0.5, boost: 0.35, label: "Company (+35% output)" },
+  { minUsd: 1, boost: 0.6, label: "Free Company (+60% output)" },
+  { minUsd: 5, boost: 1.25, label: "War Host (+125% output)" },
 ];
 
-export const STORAGE_KEY = "idle-legion-v1";
+const FIRST_NAMES = [
+  "Marek", "Bram", "Sigrid", "Talia", "Osric", "Vale", "Doran", "Kest",
+  "Yara", "Fenn", "Rurik", "Sable", "Corvin", "Mira", "Halden", "Nyx",
+  "Ardo", "Petra", "Gwynn", "Roan", "Ilsa", "Brand", "Vex", "Torin",
+];
+
+let nameCursor = Math.floor(Math.random() * FIRST_NAMES.length);
+export function randomName(): string {
+  const n = FIRST_NAMES[nameCursor % FIRST_NAMES.length];
+  nameCursor++;
+  return n;
+}

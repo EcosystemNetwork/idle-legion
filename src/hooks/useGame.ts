@@ -1,21 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   applyWarChestFunding,
-  buyUnit,
+  assignDweller,
+  autoStaff,
+  buildRoom,
   claimRaid,
+  collectAll,
+  collectRoom,
   deriveStats,
   loadState,
+  recruitDweller,
+  rushRoom,
   saveState,
   startRaid,
   tick,
-  upgradeBarracks,
+  unassignDweller,
+  upgradeRoom,
 } from "../game/engine";
-import type { GameState, UnitId } from "../game/types";
+import { STORAGE_KEY } from "../game/config";
+import type { GameState, RoomType } from "../game/types";
 
 export function useGame() {
   const [state, setState] = useState<GameState>(() => loadState());
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -46,15 +54,23 @@ export function useGame() {
 
   const actions = useMemo(
     () => ({
-      buy: (id: UnitId) => wrap((s) => buyUnit(s, id)),
-      upgradeBarracks: () => wrap((s) => upgradeBarracks(s)),
+      recruit: () => wrap(recruitDweller),
+      build: (type: RoomType) => wrap((s) => buildRoom(s, type)),
+      upgrade: (roomId: string) => wrap((s) => upgradeRoom(s, roomId)),
+      assign: (dwellerId: string, roomId: string) =>
+        wrap((s) => assignDweller(s, dwellerId, roomId)),
+      unassign: (dwellerId: string) => wrap((s) => unassignDweller(s, dwellerId)),
+      autoStaff: (roomId: string) => wrap((s) => autoStaff(s, roomId)),
+      collect: (roomId: string) => wrap((s) => collectRoom(s, roomId)),
+      collectAll: () => wrap(collectAll),
+      rush: (roomId: string) => wrap((s) => rushRoom(s, roomId)),
       startRaid: (missionId: string) => wrap((s) => startRaid(s, missionId)),
-      claimRaid: () => wrap((s) => claimRaid(s)),
+      claimRaid: () => wrap(claimRaid),
       applyFunding: (usd: number, txId: string | null) =>
         wrap((s) => applyWarChestFunding(s, usd, txId)),
       clearError: () => setError(null),
       reset: () => {
-        localStorage.removeItem("idle-legion-v1");
+        localStorage.removeItem(STORAGE_KEY);
         setState(loadState());
       },
     }),
