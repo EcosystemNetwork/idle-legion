@@ -32,6 +32,55 @@ function shortAddr(a: string) {
 }
 
 type Tab = "stronghold" | "legion" | "raids" | "warchest";
+type Actions = ReturnType<typeof useGame>["actions"];
+type Stats = ReturnType<typeof useGame>["stats"];
+type Wallet = ReturnType<typeof useWallet>;
+
+const RESOURCE_ICON: Record<string, string> = {
+  gold: "🪙",
+  provisions: "🌾",
+  might: "⚔️",
+};
+
+// ---------------- Dweller sprite (little cartoon person) ----------------
+
+function DwellerSprite({
+  d,
+  onClick,
+  title,
+  resting,
+}: {
+  d: Dweller;
+  onClick?: () => void;
+  title?: string;
+  resting?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={`sprite apt-${d.aptitude} ${resting ? "resting" : ""}`}
+      style={{ animationDelay: `${(d.id.charCodeAt(d.id.length - 1) % 10) * 0.13}s` }}
+      title={title ?? `${d.name} · ${TIERS[d.tier].name} · Lv${d.level} · ${APTITUDE_LABEL[d.aptitude]}`}
+      onClick={onClick}
+    >
+      <span className="sp-badge">{TIERS[d.tier].icon}</span>
+      <span className="sp-head" />
+      <span className="sp-body" />
+      <span className="sp-legs" />
+      <span className="sp-lvl">{d.level}</span>
+    </button>
+  );
+}
+
+function GhostSlot({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="sprite ghost" onClick={onClick} title="Assign a dweller">
+      <span className="sp-plus">＋</span>
+    </button>
+  );
+}
+
+// ---------------- App ----------------
 
 export default function App() {
   const { state, stats, error: gameError, now, actions } = useGame();
@@ -54,8 +103,6 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="bg-glow" aria-hidden />
-
       <header className="top">
         <div className="brand">
           <span className="brand-icon">⚔️</span>
@@ -86,10 +133,10 @@ export default function App() {
       <nav className="tabs">
         {(
           [
-            ["stronghold", "Stronghold"],
-            ["legion", "Legion"],
-            ["raids", "Raids"],
-            ["warchest", "War Chest"],
+            ["stronghold", "🏰 Stronghold"],
+            ["legion", "🛡️ Legion"],
+            ["raids", "🗺️ Raids"],
+            ["warchest", "🏦 War Chest"],
           ] as const
         ).map(([id, label]) => (
           <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
@@ -173,54 +220,62 @@ function ResourceBar({
   onCollectAll,
 }: {
   state: GameState;
-  stats: ReturnType<typeof useGame>["stats"];
-  wallet: ReturnType<typeof useWallet>;
+  stats: Stats;
+  wallet: Wallet;
   onCollectAll: () => void;
 }) {
   const anyReady = state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1);
   return (
     <section className="resources">
-      <div className="stat gold">
-        <span className="label">Gold</span>
-        <strong>{formatNum(state.gold)}</strong>
-        <small>+{stats.goldPerSec.toFixed(1)}/s</small>
+      <div className="chip-stat gold">
+        <span className="ci">🪙</span>
+        <span className="cv">
+          <b>{formatNum(state.gold)}</b>
+          <small>+{stats.goldPerSec.toFixed(1)}/s</small>
+        </span>
       </div>
-      <div className={`stat prov ${stats.fed ? "" : "warn"}`}>
-        <span className="label">Provisions</span>
-        <strong>{formatNum(state.provisions)}</strong>
-        <small>
-          {stats.provisionsPerSec >= 0 ? "+" : ""}
-          {stats.provisionsPerSec.toFixed(2)}/s {stats.fed ? "" : "· STARVING"}
-        </small>
+      <div className={`chip-stat prov ${stats.fed ? "" : "warn"}`}>
+        <span className="ci">🌾</span>
+        <span className="cv">
+          <b>{formatNum(state.provisions)}</b>
+          <small>
+            {stats.provisionsPerSec >= 0 ? "+" : ""}
+            {stats.provisionsPerSec.toFixed(2)}/s {stats.fed ? "" : "· STARVING"}
+          </small>
+        </span>
       </div>
-      <div className="stat pop">
-        <span className="label">Legion</span>
-        <strong>
-          {stats.population}
-          <span className="cap">/{maxPopulation(state)}</span>
-        </strong>
-        <small>{stats.idleCount} idle</small>
+      <div className="chip-stat pop">
+        <span className="ci">🛡️</span>
+        <span className="cv">
+          <b>
+            {stats.population}
+            <span className="cap">/{maxPopulation(state)}</span>
+          </b>
+          <small>{stats.idleCount} idle</small>
+        </span>
       </div>
-      <div className="stat might">
-        <span className="label">Might</span>
-        <strong>{Math.floor(stats.might)}</strong>
-        <small>{state.totalRaids} raids won</small>
+      <div className="chip-stat might">
+        <span className="ci">⚔️</span>
+        <span className="cv">
+          <b>{Math.floor(stats.might)}</b>
+          <small>{state.totalRaids} raids</small>
+        </span>
       </div>
-      <div className="stat merc">
-        <span className="label">Free Company</span>
-        <strong>+{Math.round(state.mercenaryBoost * 100)}%</strong>
-        <small>chest ${state.warChestUsd.toFixed(2)}</small>
+      <div className="chip-stat merc">
+        <span className="ci">🎖️</span>
+        <span className="cv">
+          <b>+{Math.round(state.mercenaryBoost * 100)}%</b>
+          <small>chest ${state.warChestUsd.toFixed(2)}</small>
+        </span>
       </div>
-      <div className="stat onchain">
-        <span className="label">Unified balance</span>
-        <strong>
-          {wallet.totalUsd == null
-            ? wallet.session
-              ? "…"
-              : "—"
-            : `$${wallet.totalUsd.toFixed(2)}`}
-        </strong>
-        <small>{wallet.session ? shortAddr(wallet.session.address) : "not connected"}</small>
+      <div className="chip-stat onchain">
+        <span className="ci">🔗</span>
+        <span className="cv">
+          <b>
+            {wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
+          </b>
+          <small>{wallet.session ? shortAddr(wallet.session.address) : "offline"}</small>
+        </span>
       </div>
       <button
         type="button"
@@ -246,32 +301,43 @@ function StrongholdView({
   onOpenRaids,
 }: {
   state: GameState;
-  stats: ReturnType<typeof useGame>["stats"];
+  stats: Stats;
   now: number;
-  actions: ReturnType<typeof useGame>["actions"];
+  actions: Actions;
   onAssign: (roomId: string) => void;
   onOpenWarChest: () => void;
   onOpenRaids: () => void;
 }) {
   return (
     <section className="stronghold">
-      <div className="cutaway">
-        <div className="surface">
-          <span>⛰️ THE SURFACE</span>
+      <div className="mountain">
+        <div className="sky">
+          <span className="cloud c1">☁️</span>
+          <span className="sun">🌄 THE SURFACE</span>
+          <span className="cloud c2">☁️</span>
         </div>
-        {state.rooms.map((room) => (
-          <RoomRow
-            key={room.id}
-            room={room}
-            state={state}
-            stats={stats}
-            now={now}
-            actions={actions}
-            onAssign={onAssign}
-            onOpenWarChest={onOpenWarChest}
-            onOpenRaids={onOpenRaids}
-          />
-        ))}
+        <div className="dig">
+          <div className="shaft" aria-hidden>
+            {state.rooms.map((r) => (
+              <span key={r.id} className="rung" />
+            ))}
+          </div>
+          <div className="floors">
+            {state.rooms.map((room) => (
+              <RoomFloor
+                key={room.id}
+                room={room}
+                state={state}
+                stats={stats}
+                now={now}
+                actions={actions}
+                onAssign={onAssign}
+                onOpenWarChest={onOpenWarChest}
+                onOpenRaids={onOpenRaids}
+              />
+            ))}
+          </div>
+        </div>
         <div className="bedrock">
           <BuildMenu state={state} actions={actions} />
         </div>
@@ -280,7 +346,7 @@ function StrongholdView({
   );
 }
 
-function RoomRow({
+function RoomFloor({
   room,
   state,
   stats,
@@ -292,9 +358,9 @@ function RoomRow({
 }: {
   room: Room;
   state: GameState;
-  stats: ReturnType<typeof useGame>["stats"];
+  stats: Stats;
   now: number;
-  actions: ReturnType<typeof useGame>["actions"];
+  actions: Actions;
   onAssign: (roomId: string) => void;
   onOpenWarChest: () => void;
   onOpenRaids: () => void;
@@ -309,132 +375,118 @@ function RoomRow({
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const incident = state.incident?.roomId === room.id ? state.incident : null;
   const upCost = upgradeCost(room);
+  const resIcon = def.produces ? RESOURCE_ICON[def.produces] : null;
+
+  // Idle dwellers mill about in the Great Hall.
+  const resting =
+    room.type === "hall"
+      ? state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id)).slice(0, 8)
+      : [];
 
   return (
-    <article className={`room ${room.type} ${incident ? "on-fire" : ""}`}>
-      <div className="room-face">
-        <div className="room-id">
-          <span className="room-icon">{def.icon}</span>
-          <div>
-            <h3>
-              {def.name} <span className="lvl">Lv {room.level}</span>
-            </h3>
-            <p className="muted small">
-              {def.aptitude ? (
-                <>
-                  best worked by {APTITUDE_ICON[def.aptitude]} {APTITUDE_LABEL[def.aptitude]}
-                </>
-              ) : (
-                def.description
-              )}
-            </p>
-          </div>
+    <div className="floor">
+      <div className={`room ${room.type} ${incident ? "on-fire" : ""} ${ready ? "is-ready" : ""}`}>
+        <div className="room-tag">
+          <span className="rt-icon">{def.icon}</span>
+          <span className="rt-name">{def.name}</span>
+          <span className="rt-lvl">Lv {room.level}</span>
+          {def.aptitude && (
+            <span className="rt-apt">
+              {APTITUDE_ICON[def.aptitude]} {APTITUDE_LABEL[def.aptitude]}
+            </span>
+          )}
         </div>
 
-        {/* worker slots */}
-        {cap > 0 && (
-          <div className="slots">
-            {Array.from({ length: cap }).map((_, i) => {
-              const d = workers[i];
-              return d ? (
-                <button
-                  key={d.id}
-                  className={`slot filled ${aptMatch(room, d) ? "match" : ""}`}
-                  title={`${d.name} · ${TIERS[d.tier].name} · Lv${d.level} · ${APTITUDE_LABEL[d.aptitude]}`}
-                  onClick={() => actions.unassign(d.id)}
-                >
-                  <span>{TIERS[d.tier].icon}</span>
-                  <i>{d.level}</i>
-                </button>
-              ) : (
-                <button key={i} className="slot empty" onClick={() => onAssign(room.id)}>
-                  +
-                </button>
-              );
-            })}
+        <div className="crew">
+          {workers.map((d) => (
+            <DwellerSprite key={d.id} d={d} onClick={() => actions.unassign(d.id)} />
+          ))}
+          {cap > 0 &&
+            Array.from({ length: Math.max(0, cap - workers.length) }).map((_, i) => (
+              <GhostSlot key={i} onClick={() => onAssign(room.id)} />
+            ))}
+          {resting.map((d) => (
+            <DwellerSprite key={d.id} d={d} resting title={`${d.name} · idle in the Hall`} />
+          ))}
+          {cap === 0 && room.type !== "hall" && (
+            <p className="room-note">{def.description}</p>
+          )}
+        </div>
+
+        <div className="floor-line" />
+
+        {storeCap > 0 && (
+          <div className="prod-meter" title={`${rate.toFixed(1)}/s`}>
+            <i style={{ width: `${fill * 100}%` }} className={ready ? "full" : ""} />
+            <b>+{rate.toFixed(1)}/s</b>
           </div>
         )}
 
-        {/* production / collect */}
-        {storeCap > 0 && (
-          <div className="production">
-            <div className="prod-bar">
-              <i style={{ width: `${fill * 100}%` }} className={ready ? "full" : ""} />
-            </div>
+        {ready && resIcon && (
+          <button type="button" className="bubble" onClick={() => actions.collect(room.id)}>
+            <span className="b-icon">{resIcon}</span>
+            <span className="b-amt">+{formatNum(stored)}</span>
+          </button>
+        )}
+
+        <div className="room-ctrls">
+          {def.produces && (
             <button
               type="button"
-              className={`collect ${ready ? "ready" : ""}`}
-              disabled={!ready}
-              onClick={() => actions.collect(room.id)}
+              className="chip-btn"
+              title="Rush: instantly fill storage — risks an incident"
+              onClick={() => actions.rush(room.id)}
             >
-              {ready ? `Collect ${formatNum(stored)}` : `+${rate.toFixed(1)}/s`}
+              ⚡
             </button>
+          )}
+          {cap > 0 && (
+            <button
+              type="button"
+              className="chip-btn"
+              title="Auto-staff from idle dwellers"
+              onClick={() => actions.autoStaff(room.id)}
+            >
+              👥
+            </button>
+          )}
+          {room.type === "warroom" && (
+            <button type="button" className="chip-btn go" onClick={onOpenRaids}>
+              Raid ▸
+            </button>
+          )}
+          {room.type === "warchest" && (
+            <button type="button" className="chip-btn go" onClick={onOpenWarChest}>
+              Vault ▸
+            </button>
+          )}
+          {room.type !== "warchest" && (
+            <button
+              type="button"
+              className="chip-btn up"
+              disabled={state.gold < upCost}
+              onClick={() => actions.upgrade(room.id)}
+              title={`Upgrade to Lv ${room.level + 1}`}
+            >
+              ▲ {formatNum(upCost)}
+            </button>
+          )}
+        </div>
+
+        {incident && (
+          <div className="incident-overlay">
+            🔥 {incident.label} · {Math.max(0, Math.ceil((incident.endsAt - now) / 1000))}s
           </div>
         )}
       </div>
-
-      {/* per-room actions */}
-      <div className="room-actions">
-        {def.produces && (
-          <button
-            type="button"
-            className="mini"
-            title="Instantly fill storage — risks an incident"
-            onClick={() => actions.rush(room.id)}
-          >
-            ⚡ Rush
-          </button>
-        )}
-        {cap > 0 && (
-          <button type="button" className="mini" onClick={() => actions.autoStaff(room.id)}>
-            Auto-staff
-          </button>
-        )}
-        {room.type === "warroom" && (
-          <button type="button" className="mini accent" onClick={onOpenRaids}>
-            Plan raid →
-          </button>
-        )}
-        {room.type === "warchest" && (
-          <button type="button" className="mini accent" onClick={onOpenWarChest}>
-            Open vault →
-          </button>
-        )}
-        {room.type !== "warchest" && (
-          <button
-            type="button"
-            className="mini"
-            disabled={state.gold < upCost}
-            onClick={() => actions.upgrade(room.id)}
-          >
-            ⬆ Lv{room.level + 1} · {formatNum(upCost)}g
-          </button>
-        )}
-      </div>
-
-      {incident && (
-        <div className="incident-overlay">
-          🔥 {incident.label} · {Math.max(0, Math.ceil((incident.endsAt - now) / 1000))}s
-        </div>
-      )}
-    </article>
+    </div>
   );
 }
 
-function aptMatch(room: Room, d: Dweller): boolean {
-  return ROOMS[room.type].aptitude === d.aptitude;
-}
-
-function BuildMenu({
-  state,
-  actions,
-}: {
-  state: GameState;
-  actions: ReturnType<typeof useGame>["actions"];
-}) {
+function BuildMenu({ state, actions }: { state: GameState; actions: Actions }) {
   return (
     <div className="build-menu">
-      <span className="build-label">⛏ Dig a new room</span>
+      <span className="build-label">⛏ DIG A NEW ROOM</span>
       <div className="build-row">
         {BUILDABLE.map((type) => {
           const def = ROOMS[type];
@@ -443,14 +495,14 @@ function BuildMenu({
           return (
             <button
               key={type}
-              className="build-btn"
+              className={`build-btn ${type}`}
               disabled={exists || state.gold < cost}
               onClick={() => actions.build(type)}
               title={def.description}
             >
               <span className="bi">{def.icon}</span>
               <span className="bn">{def.name}</span>
-              <span className="bc">{exists ? "built" : `${formatNum(cost)}g`}</span>
+              <span className="bc">{exists ? "built" : `🪙 ${formatNum(cost)}`}</span>
             </button>
           );
         })}
@@ -461,13 +513,7 @@ function BuildMenu({
 
 // ---------------- Legion roster ----------------
 
-function LegionView({
-  state,
-  actions,
-}: {
-  state: GameState;
-  actions: ReturnType<typeof useGame>["actions"];
-}) {
+function LegionView({ state, actions }: { state: GameState; actions: Actions }) {
   const cost = recruitCost(state);
   const full = state.dwellers.length >= maxPopulation(state);
   const sorted = [...state.dwellers].sort(
@@ -476,14 +522,14 @@ function LegionView({
   return (
     <section className="panel legion">
       <div className="panel-head">
-        <h2>The Legion · {state.dwellers.length}/{maxPopulation(state)}</h2>
+        <h2>🛡️ The Legion · {state.dwellers.length}/{maxPopulation(state)}</h2>
         <button
           type="button"
           className="btn"
           disabled={full || state.gold < cost}
           onClick={() => actions.recruit()}
         >
-          {full ? "Hall full" : `Recruit · ${formatNum(cost)}g`}
+          {full ? "Hall full" : `Recruit · 🪙 ${formatNum(cost)}`}
         </button>
       </div>
       <div className="roster">
@@ -491,36 +537,41 @@ function LegionView({
           const room = d.roomId ? state.rooms.find((r) => r.id === d.roomId) : null;
           const out = isOnRaid(state, d.id);
           return (
-            <article key={d.id} className="dweller-card">
-              <span className="dw-icon">{TIERS[d.tier].icon}</span>
-              <div className="dw-main">
-                <h3>
-                  {d.name} <span className="muted small">{TIERS[d.tier].name}</span>
-                </h3>
-                <div className="dw-meta">
+            <article key={d.id} className={`hero-card apt-${d.aptitude}`}>
+              <div className="hc-portrait">
+                <DwellerSprite d={d} title={d.name} />
+              </div>
+              <div className="hc-main">
+                <h3>{d.name}</h3>
+                <span className="hc-tier">
+                  {TIERS[d.tier].icon} {TIERS[d.tier].name}
+                </span>
+                <div className="hc-meta">
                   <span className="apt">
                     {APTITUDE_ICON[d.aptitude]} {APTITUDE_LABEL[d.aptitude]}
                   </span>
                   <span>Lv {d.level}</span>
-                  <span>{Math.floor(dwellerMight(d))} might</span>
+                  <span>{Math.floor(dwellerMight(d))} ⚔</span>
                 </div>
                 <div className="xpbar">
                   <i style={{ width: `${Math.min(100, (d.xp / (d.level * 100)) * 100)}%` }} />
                 </div>
-              </div>
-              <div className="dw-status">
-                {out ? (
-                  <span className="badge raid">On raid</span>
-                ) : room ? (
-                  <>
-                    <span className="badge">{ROOMS[room.type].icon} {ROOMS[room.type].name}</span>
-                    <button className="mini" onClick={() => actions.unassign(d.id)}>
-                      Recall
-                    </button>
-                  </>
-                ) : (
-                  <span className="badge idle">Idle</span>
-                )}
+                <div className="hc-status">
+                  {out ? (
+                    <span className="badge raid">On raid</span>
+                  ) : room ? (
+                    <>
+                      <span className="badge">
+                        {ROOMS[room.type].icon} {ROOMS[room.type].name}
+                      </span>
+                      <button className="chip-btn" onClick={() => actions.unassign(d.id)}>
+                        Recall
+                      </button>
+                    </>
+                  ) : (
+                    <span className="badge idle">Idle</span>
+                  )}
+                </div>
               </div>
             </article>
           );
@@ -532,29 +583,22 @@ function LegionView({
 
 // ---------------- Raids ----------------
 
-function RaidsView({
-  state,
-  now,
-  actions,
-}: {
-  state: GameState;
-  now: number;
-  actions: ReturnType<typeof useGame>["actions"];
-}) {
+function RaidsView({ state, now, actions }: { state: GameState; now: number; actions: Actions }) {
   const hasWarRoom = state.rooms.some((r) => r.type === "warroom");
   const squadMight = raidSquadMight(state);
   const raid = state.activeRaid;
   const mission = raid ? RAIDS.find((m) => m.id === raid.missionId) : null;
   const raidLeft = raid ? Math.max(0, Math.ceil((raid.endsAt - now) / 1000)) : 0;
   const raidDone = raid ? now >= raid.endsAt : false;
-  const raidProg = raid && mission ? Math.min(1, (now - raid.startedAt) / (raid.endsAt - raid.startedAt)) : 0;
+  const raidProg =
+    raid && mission ? Math.min(1, (now - raid.startedAt) / (raid.endsAt - raid.startedAt)) : 0;
 
   return (
     <section className="panel raids">
       <div className="panel-head">
-        <h2>Raids</h2>
+        <h2>🗺️ Raids</h2>
         <p className="muted small">
-          Idle squad might: <strong>{Math.floor(squadMight)}</strong> · sends all idle dwellers
+          Idle squad might: <strong>{Math.floor(squadMight)} ⚔</strong> · sends all idle dwellers
         </p>
       </div>
 
@@ -564,14 +608,14 @@ function RaidsView({
 
       {raid && mission && (
         <div className="active-raid">
-          <span>{mission.icon}</span>
+          <span className="ar-icon">{mission.icon}</span>
           <div className="ar-main">
             <strong>{mission.name}</strong>
-            <div className="prod-bar big">
+            <div className="prod-meter big">
               <i style={{ width: `${raidProg * 100}%` }} className={raidDone ? "full" : ""} />
             </div>
             <span className="muted small">
-              {raid.squad.length} dwellers out · {raidDone ? "returned" : `${raidLeft}s`}
+              {raid.squad.length} dwellers out · {raidDone ? "returned!" : `${raidLeft}s`}
             </span>
           </div>
           <button
@@ -591,16 +635,16 @@ function RaidsView({
           return (
             <article key={m.id} className={`raid-card ${locked ? "locked" : ""}`}>
               <div className="raid-top">
-                <span>{m.icon}</span>
+                <span className="raid-icon">{m.icon}</span>
                 <div>
                   <h3>{m.name}</h3>
                   <p>{m.description}</p>
                 </div>
               </div>
-              <div className="dw-meta">
-                <span>{m.durationSec}s</span>
-                <span>≥{m.minMight} might</span>
-                <span>+{formatNum(m.goldReward)}g</span>
+              <div className="raid-meta">
+                <span>⏱ {m.durationSec}s</span>
+                <span>⚔ ≥{m.minMight}</span>
+                <span>🪙 +{formatNum(m.goldReward)}</span>
               </div>
               <button
                 type="button"
@@ -630,7 +674,7 @@ function WarChestView({
   onFund,
 }: {
   state: GameState;
-  wallet: ReturnType<typeof useWallet>;
+  wallet: Wallet;
   email: string;
   setEmail: (v: string) => void;
   fundAmount: string;
@@ -800,7 +844,7 @@ function AssignModal({
 }: {
   room: Room;
   state: GameState;
-  actions: ReturnType<typeof useGame>["actions"];
+  actions: Actions;
   onClose: () => void;
 }) {
   const def = ROOMS[room.type];
@@ -816,7 +860,7 @@ function AssignModal({
           <h3>
             {def.icon} Staff the {def.name}
           </h3>
-          <button className="mini" onClick={onClose}>
+          <button className="chip-btn" onClick={onClose}>
             ✕
           </button>
         </div>
@@ -837,7 +881,7 @@ function AssignModal({
             <div className="picker">
               {workers.map((d) => (
                 <button key={d.id} className="pick on" onClick={() => actions.unassign(d.id)}>
-                  <span>{TIERS[d.tier].icon}</span>
+                  <span className="pk-ic">{TIERS[d.tier].icon}</span>
                   <span className="pn">{d.name}</span>
                   <span className="px">Lv{d.level}</span>
                   <span className="rm">recall</span>
@@ -849,7 +893,9 @@ function AssignModal({
 
         <h4 className="ml">Idle ({idle.length})</h4>
         <div className="picker">
-          {idle.length === 0 && <p className="muted small">No idle dwellers. Recruit more in the Legion tab.</p>}
+          {idle.length === 0 && (
+            <p className="muted small">No idle dwellers. Recruit more in the Legion tab.</p>
+          )}
           {idle.map((d) => {
             const match = apt && d.aptitude === apt;
             const full = workers.length >= cap;
@@ -860,10 +906,10 @@ function AssignModal({
                 disabled={full}
                 onClick={() => actions.assign(d.id, room.id)}
               >
-                <span>{TIERS[d.tier].icon}</span>
+                <span className="pk-ic">{TIERS[d.tier].icon}</span>
                 <span className="pn">{d.name}</span>
                 <span className="apt">
-                  {APTITUDE_ICON[d.aptitude]} {match ? "match" : APTITUDE_LABEL[d.aptitude]}
+                  {APTITUDE_ICON[d.aptitude]} {match ? "match!" : APTITUDE_LABEL[d.aptitude]}
                 </span>
                 <span className="px">Lv{d.level}</span>
               </button>
