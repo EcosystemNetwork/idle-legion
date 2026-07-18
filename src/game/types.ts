@@ -16,6 +16,32 @@ export interface TierDef {
   recruitCost: number; // gold to recruit one
 }
 
+export type Rarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
+export type GearSlot = "weapon" | "armor" | "mount";
+
+/** Catalog definition of a piece of equipment. */
+export interface GearDef {
+  id: string;
+  name: string;
+  slot: GearSlot;
+  rarity: Rarity;
+  img: string;
+  might: number; // added to hero might
+  output: number; // added to hero room output/sec
+}
+
+/** An owned instance of gear. */
+export interface GearItem {
+  id: string; // unique instance id
+  defId: string; // -> GearDef
+}
+
+export interface Equipped {
+  weapon: string | null; // gear item id
+  armor: string | null;
+  mount: string | null;
+}
+
 export interface Dweller {
   id: string;
   tier: Tier;
@@ -24,6 +50,7 @@ export interface Dweller {
   level: number;
   xp: number;
   roomId: string | null; // assigned room, or null = idle in the Hall
+  equipped: Equipped;
 }
 
 /** Room types dug into the mountain. */
@@ -83,11 +110,40 @@ export interface Incident {
   endsAt: number; // auto-resolves (dwellers fight it off) by this time
 }
 
+export type ObjectiveKind = "gold" | "raids" | "legion" | "might" | "boss";
+
+export interface Objective {
+  id: string;
+  kind: ObjectiveKind;
+  target: number;
+  reward: number; // lunchboxes granted
+}
+
+export interface BossDef {
+  id: string;
+  name: string;
+  img: string;
+  baseHp: number;
+  reward: number; // gold on defeat
+}
+
+export interface ArenaState {
+  bossIndex: number;
+  bossHp: number;
+  rank: number; // lower is better; starts high
+  wins: number;
+  lastFightAt: number;
+}
+
 export interface GameState {
   gold: number;
   provisions: number;
   rooms: Room[];
   dwellers: Dweller[];
+  gear: GearItem[]; // all owned gear instances (equipped + inventory)
+  lunchboxes: number; // unopened loot crates
+  objectives: Objective[];
+  arena: ArenaState;
   activeRaid: ActiveRaid | null;
   incident: Incident | null;
   // On-chain war chest → permanent mercenary production multiplier
@@ -97,6 +153,7 @@ export interface GameState {
   lastFundTxId: string | null;
   totalRaids: number;
   totalGoldEarned: number;
+  totalBossWins: number;
   lastTick: number;
 }
 

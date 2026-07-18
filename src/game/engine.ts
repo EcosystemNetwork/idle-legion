@@ -1,8 +1,13 @@
 import {
   APTITUDE_LABEL,
+  BOSSES,
+  FIGHT_COOLDOWN_MS,
+  GEAR_BY_ID,
+  GEAR_CATALOG,
   MATCH_BONUS,
   MERCENARY_TIERS,
   RAIDS,
+  RARITY_META,
   ROOMS,
   STARVING_PENALTY,
   STORAGE_KEY,
@@ -15,7 +20,13 @@ import type {
   Dweller,
   DerivedStats,
   GameState,
+  GearDef,
+  GearItem,
+  GearSlot,
   IncidentKind,
+  Objective,
+  ObjectiveKind,
+  Rarity,
   Room,
   RoomType,
   Tier,
@@ -39,6 +50,7 @@ export function makeDweller(tier: Tier): Dweller {
     level: 1,
     xp: 0,
     roomId: null,
+    equipped: { weapon: null, armor: null, mount: null },
   };
 }
 
@@ -65,6 +77,10 @@ export function createInitialState(now = Date.now()): GameState {
     provisions: 120,
     rooms: [hall, mine, warchest],
     dwellers,
+    gear: [],
+    lunchboxes: 2, // starter crates to try the gacha
+    objectives: defaultObjectives(),
+    arena: { bossIndex: 0, bossHp: BOSSES[0].baseHp, rank: 999, wins: 0, lastFightAt: 0 },
     activeRaid: null,
     incident: null,
     warChestUsd: 0,
@@ -73,7 +89,72 @@ export function createInitialState(now = Date.now()): GameState {
     lastFundTxId: null,
     totalRaids: 0,
     totalGoldEarned: 0,
+    totalBossWins: 0,
     lastTick: now,
+  };
+}
+
+// ---------- objectives ----------
+
+const OBJ_BASE: Record<ObjectiveKind, number> = {
+  gold: 500,
+  raids: 1,
+  legion: 4,
+  might: 60,
+  boss: 1,
+};
+
+function makeObjective(kind: ObjectiveKind, mult: number): Objective {
+  return {
+    id: uid("o"),
+    kind,
+    target: Math.ceil(OBJ_BASE[kind] * mult),
+    reward: 1,
+  };
+}
+
+function defaultObjectives(): Objective[] {
+  return [
+    makeObjective("gold", 1),
+    makeObjective("raids", 1),
+    makeObjective("legion", 1),
+  ];
+}
+
+export function objectiveProgress(state: GameState, o: Objective): number {
+  switch (o.kind) {
+    case "gold": return Math.floor(state.totalGoldEarned);
+    case "raids": return state.totalRaids;
+    case "legion": return state.dwellers.length;
+    case "might": return Math.floor(deriveStats(state).might);
+    case "boss": return state.totalBossWins;
+  }
+}
+
+export function objectiveLabel(o: Objective): string {
+  switch (o.kind) {
+    case "gold": return `Earn ${formatNum(o.target)} total gold`;
+    case "raids": return `Win ${o.target} raid${o.target > 1 ? "s" : ""}`;
+    case "legion": return `Field a legion of ${o.target}`;
+    case "might": return `Reach ${o.target} might`;
+    case "boss": return `Defeat ${o.target} arena boss${o.target > 1 ? "es" : ""}`;
+  }
+}
+
+export function claimObjective(state: GameState, objId: string): GameState {
+  const o = state.objectives.find((x) => x.id === objId);
+  if (!o) return state;
+  if (objectiveProgress(state, o) < o.target) throw new Error("Objective not complete yet.");
+  // advance: replace with a harder objective of a rotating kind
+  const kinds: ObjectiveKind[] = ["gold", "raids", "legion", "might", "boss"];
+  const nextKind = kinds[(kinds.indexOf(o.kind) + 1) % kinds.length];
+  const mult = 1 + 0.6 * (o.reward + state.totalBossWins + 1);
+  return {
+    ...state,
+    lunchboxes: state.lunchboxes + o.reward,
+    objectives: state.objectives.map((x) =>
+      x.id === objId ? makeObjective(nextKind, mult) : x,
+    ),
   };
 }
 
@@ -106,12 +187,51 @@ export function maxPopulation(state: GameState): number {
   return 3 + 3 * lvl;
 }
 
-export function dwellerOutput(d: Dweller): number {
-  return TIERS[d.tier].output * (1 + 0.12 * (d.level - 1));
+export function equippedGearDefs(state: GameState, d: Dweller): GearDef[] {
+  const ids = [d.equipped.weapon, d.equipped.armor, d.equipped.mount].filter(
+    Boolean,
+  ) as string[];
+  const out: GearDef[] = [];
+  for (const id of ids) {
+    const item = state.gear.find((g) => g.id === id);
+    if (item && GEAR_BY_ID[item.defId]) out.push(GEAR_BY_ID[item.defId]);
+  }
+  return out;
 }
 
-export function dwellerMight(d: Dweller): number {
-  return TIERS[d.tier].might * (1 + 0.1 * (d.level - 1));
+function gearBonus(state: GameState, d: Dweller): { might: number; output: number } {
+  let might = 0;
+  let output = 0;
+  for (const g of equippedGearDefs(state, d)) {
+    might += g.might;
+    output += g.output;
+  }
+  return { might, output };
+}
+
+export function dwellerOutput(d: Dweller, state: GameState): number {
+  const base = TIERS[d.tier].output * (1 + 0.12 * (d.level - 1));
+  return base + gearBonus(state, d).output;
+}
+
+export function dwellerMight(d: Dweller, state: GameState): number {
+  const base = TIERS[d.tier].might * (1 + 0.1 * (d.level - 1));
+  return base + gearBonus(state, d).might;
+}
+
+/** Unequipped gear (in the armory, not on any hero). */
+export function inventoryGear(state: GameState): GearItem[] {
+  const equippedIds = new Set<string>();
+  for (const d of state.dwellers) {
+    if (d.equipped.weapon) equippedIds.add(d.equipped.weapon);
+    if (d.equipped.armor) equippedIds.add(d.equipped.armor);
+    if (d.equipped.mount) equippedIds.add(d.equipped.mount);
+  }
+  return state.gear.filter((g) => !equippedIds.has(g.id));
+}
+
+export function gearDefOf(item: GearItem): GearDef {
+  return GEAR_BY_ID[item.defId];
 }
 
 export function aptitudeMatches(room: Room, d: Dweller): boolean {
@@ -128,7 +248,7 @@ export function roomRate(state: GameState, room: Room, fed: boolean): number {
   for (const wid of room.workers) {
     const d = dwellerById(state, wid);
     if (!d) continue;
-    let o = dwellerOutput(d);
+    let o = dwellerOutput(d, state);
     if (def.aptitude && d.aptitude === def.aptitude) o *= 1 + MATCH_BONUS;
     rate += o;
   }
@@ -156,7 +276,7 @@ export function deriveStats(state: GameState): DerivedStats {
   }
 
   let might = forgeMight;
-  for (const d of state.dwellers) might += dwellerMight(d);
+  for (const d of state.dwellers) might += dwellerMight(d, state);
 
   const provisionsPerSec = provGross - population * UPKEEP_PER_DWELLER;
 
@@ -319,7 +439,7 @@ export function autoStaff(state: GameState, roomId: string): GameState {
         const am = apt && a.aptitude === apt ? 1 : 0;
         const bm = apt && b.aptitude === apt ? 1 : 0;
         if (am !== bm) return bm - am;
-        return dwellerOutput(b) - dwellerOutput(a);
+        return dwellerOutput(b, next) - dwellerOutput(a, next);
       });
     if (idle.length === 0) break;
     next = assignDweller(next, idle[0].id, roomId);
@@ -434,7 +554,7 @@ export function startRaid(
   }
   const might = squad.reduce((sum, id) => {
     const d = dwellerById(state, id);
-    return sum + (d ? dwellerMight(d) : 0);
+    return sum + (d ? dwellerMight(d, state) : 0);
   }, 0);
   if (might < mission.minMight) {
     throw new Error(
@@ -463,6 +583,7 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
     gold: state.gold + reward,
     totalGoldEarned: state.totalGoldEarned + reward,
     totalRaids: state.totalRaids + 1,
+    lunchboxes: state.lunchboxes + 1, // raids drop a lunchbox
     dwellers: grantXp(state, state.activeRaid.squad, 40),
     activeRaid: null,
   };
@@ -471,7 +592,7 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
 export function raidSquadMight(state: GameState): number {
   return state.dwellers
     .filter((d) => d.roomId == null && !isOnRaid(state, d.id))
-    .reduce((sum, d) => sum + dwellerMight(d), 0);
+    .reduce((sum, d) => sum + dwellerMight(d, state), 0);
 }
 
 // ---------- on-chain war chest ----------
@@ -493,6 +614,143 @@ export function applyWarChestFunding(
     fundedOnchain: true,
     lastFundTxId: txId ?? state.lastFundTxId,
   };
+}
+
+// ---------- equipment ----------
+
+export function equipGear(state: GameState, dwellerId: string, gearItemId: string): GameState {
+  const d = dwellerById(state, dwellerId);
+  const item = state.gear.find((g) => g.id === gearItemId);
+  if (!d || !item) throw new Error("Bad equip.");
+  const def = GEAR_BY_ID[item.defId];
+  const dwellers = state.dwellers.map((x) => {
+    const eq = { ...x.equipped };
+    // this item can only be worn by one hero — strip it off anyone else
+    (["weapon", "armor", "mount"] as GearSlot[]).forEach((sl) => {
+      if (eq[sl] === gearItemId) eq[sl] = null;
+    });
+    if (x.id === dwellerId) eq[def.slot] = gearItemId;
+    return { ...x, equipped: eq };
+  });
+  return { ...state, dwellers };
+}
+
+export function unequipGear(state: GameState, dwellerId: string, slot: GearSlot): GameState {
+  return {
+    ...state,
+    dwellers: state.dwellers.map((x) =>
+      x.id === dwellerId ? { ...x, equipped: { ...x.equipped, [slot]: null } } : x,
+    ),
+  };
+}
+
+// ---------- lunchboxes (gacha) ----------
+
+export type Pull =
+  | { kind: "gold"; gold: number }
+  | { kind: "gear"; item: GearItem; def: GearDef; rarity: Rarity }
+  | { kind: "hero"; dweller: Dweller };
+
+function rollRarity(): Rarity {
+  const entries = Object.entries(RARITY_META) as [Rarity, { weight: number }][];
+  const total = entries.reduce((s, [, m]) => s + m.weight, 0);
+  let r = Math.random() * total;
+  for (const [rar, m] of entries) {
+    r -= m.weight;
+    if (r <= 0) return rar;
+  }
+  return "common";
+}
+
+export function openLunchbox(state: GameState): { state: GameState; pull: Pull } {
+  if (state.lunchboxes <= 0) throw new Error("No lunchboxes to open.");
+  const s: GameState = { ...state, lunchboxes: state.lunchboxes - 1 };
+  const roll = Math.random();
+
+  if (roll < 0.4) {
+    const g = Math.floor((100 + Math.random() * 400) * (1 + state.totalBossWins * 0.5));
+    return {
+      state: { ...s, gold: s.gold + g, totalGoldEarned: s.totalGoldEarned + g },
+      pull: { kind: "gold", gold: g },
+    };
+  }
+
+  if (roll < 0.75) {
+    const rar = rollRarity();
+    const pool = GEAR_CATALOG.filter((g) => g.rarity === rar);
+    const from = pool.length ? pool : GEAR_CATALOG;
+    const def = from[Math.floor(Math.random() * from.length)];
+    const item: GearItem = { id: uid("g"), defId: def.id };
+    return {
+      state: { ...s, gear: [...s.gear, item] },
+      pull: { kind: "gear", item, def, rarity: def.rarity },
+    };
+  }
+
+  const rr = Math.random();
+  const tier: Tier =
+    rr < 0.5 ? "recruit" : rr < 0.78 ? "spearman" : rr < 0.92 ? "archer" : rr < 0.985 ? "cavalry" : "champion";
+  const dweller = makeDweller(tier);
+  return { state: { ...s, dwellers: [...s.dwellers, dweller] }, pull: { kind: "hero", dweller } };
+}
+
+// ---------- arena (World Boss) ----------
+
+export type FightResult = { damage: number; killed: boolean; reward: number; bossName: string };
+
+export function arenaSquad(state: GameState): Dweller[] {
+  return state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id));
+}
+
+export function arenaSquadPower(state: GameState): number {
+  return arenaSquad(state).reduce((s, d) => s + dwellerMight(d, state), 0);
+}
+
+export function currentBoss(state: GameState) {
+  return BOSSES[Math.min(state.arena.bossIndex, BOSSES.length - 1)];
+}
+
+export function fightBoss(state: GameState, now = Date.now()): { state: GameState; result: FightResult } {
+  if (now - state.arena.lastFightAt < FIGHT_COOLDOWN_MS) {
+    throw new Error("The legion is regrouping — wait for the cooldown.");
+  }
+  const squad = arenaSquad(state);
+  if (squad.length === 0) throw new Error("No idle heroes to send to the arena.");
+  const power = arenaSquadPower(state);
+  if (power <= 0) throw new Error("Your squad has no might.");
+
+  const boss = currentBoss(state);
+  const dmg = Math.floor(power * (0.8 + Math.random() * 0.6));
+  const hp = state.arena.bossHp - dmg;
+  let arena = { ...state.arena, lastFightAt: now };
+  let s: GameState = state;
+  let killed = false;
+  let goldGain: number;
+
+  if (hp <= 0) {
+    killed = true;
+    goldGain = boss.reward;
+    const isLast = state.arena.bossIndex >= BOSSES.length - 1;
+    const nextIndex = isLast ? state.arena.bossIndex : state.arena.bossIndex + 1;
+    const nextBoss = BOSSES[nextIndex];
+    const newHp = isLast
+      ? Math.floor(nextBoss.baseHp * (1 + 0.5 * (state.arena.wins + 1)))
+      : nextBoss.baseHp;
+    arena = {
+      ...arena,
+      bossIndex: nextIndex,
+      bossHp: newHp,
+      wins: state.arena.wins + 1,
+      rank: Math.max(1, state.arena.rank - 25),
+    };
+    s = { ...s, lunchboxes: s.lunchboxes + 1, totalBossWins: s.totalBossWins + 1 };
+  } else {
+    arena = { ...arena, bossHp: hp };
+    goldGain = Math.floor(boss.reward * 0.02);
+  }
+
+  s = { ...s, arena, gold: s.gold + goldGain, totalGoldEarned: s.totalGoldEarned + goldGain };
+  return { state: s, result: { damage: dmg, killed, reward: goldGain, bossName: boss.name } };
 }
 
 // ---------- persistence ----------

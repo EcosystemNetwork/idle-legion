@@ -1,13 +1,16 @@
 import type {
   Aptitude,
+  BossDef,
+  GearDef,
   RaidMission,
+  Rarity,
   RoomDef,
   RoomType,
   Tier,
   TierDef,
 } from "./types";
 
-export const STORAGE_KEY = "idle-legion-v2";
+export const STORAGE_KEY = "idle-legion-v3";
 
 export const APTITUDE_LABEL: Record<Aptitude, string> = {
   labor: "Labor",
@@ -260,3 +263,49 @@ export const RAID_ART: Record<string, string> = {
   fort: `${B}art/raid-fort.jpg`,
   capital: `${B}art/raid-capital.jpg`,
 };
+
+export const CRATE_IMG = `${B}art/crate.jpg`;
+export const CRATE_RARE_IMG = `${B}art/crate-rare.jpg`;
+
+// ---------- Rarity ----------
+export const RARITY_META: Record<
+  Rarity,
+  { name: string; color: string; stars: number; weight: number }
+> = {
+  common: { name: "Common", color: "#9aa6b2", stars: 1, weight: 44 },
+  uncommon: { name: "Uncommon", color: "#5fe38a", stars: 2, weight: 30 },
+  rare: { name: "Rare", color: "#4aa8ff", stars: 3, weight: 16 },
+  epic: { name: "Epic", color: "#b072ff", stars: 4, weight: 8 },
+  legendary: { name: "Legendary", color: "#ffc233", stars: 5, weight: 2 },
+};
+
+// ---------- Equipment catalog (Crypto Dynasty gear) ----------
+export const GEAR_CATALOG: GearDef[] = [
+  // weapons
+  { id: "w_dagger", name: "Rusted Dagger", slot: "weapon", rarity: "common", img: `${B}art/gear-w-dagger.jpg`, might: 4, output: 0 },
+  { id: "w_trident", name: "Retiarius Trident", slot: "weapon", rarity: "rare", img: `${B}art/gear-w-trident.jpg`, might: 12, output: 0 },
+  { id: "w_crossed", name: "Twin Gladii", slot: "weapon", rarity: "epic", img: `${B}art/gear-w-crossed.jpg`, might: 20, output: 1 },
+  { id: "w_blades", name: "Emberforged Blades", slot: "weapon", rarity: "legendary", img: `${B}art/gear-w-blades.jpg`, might: 36, output: 2 },
+  // armor
+  { id: "a_leather", name: "Tattered Leather", slot: "armor", rarity: "common", img: `${B}art/gear-a-leather.jpg`, might: 3, output: 1 },
+  { id: "a_cuirass", name: "Legionary Cuirass", slot: "armor", rarity: "uncommon", img: `${B}art/gear-a-cuirass.jpg`, might: 6, output: 1 },
+  { id: "a_manicae", name: "Manicae Guards", slot: "armor", rarity: "uncommon", img: `${B}art/gear-a-manicae.jpg`, might: 5, output: 2 },
+  { id: "a_dima", name: "Dimachaerus Plate", slot: "armor", rarity: "rare", img: `${B}art/gear-a-dimachaerus.jpg`, might: 10, output: 2 },
+  { id: "a_ornate", name: "Imperial Cuirass", slot: "armor", rarity: "epic", img: `${B}art/gear-a-ornate.jpg`, might: 16, output: 3 },
+  { id: "a_kekius", name: "Kekius Maximus Aegis", slot: "armor", rarity: "legendary", img: `${B}art/gear-a-kekius.jpg`, might: 28, output: 4 },
+  // mounts
+  { id: "m_mule", name: "Pack Mule", slot: "mount", rarity: "uncommon", img: `${B}art/gear-m-mule.jpg`, might: 4, output: 3 },
+];
+
+export const GEAR_BY_ID: Record<string, GearDef> = Object.fromEntries(
+  GEAR_CATALOG.map((g) => [g.id, g]),
+);
+
+// ---------- Arena bosses (Crypto Dynasty World Boss) ----------
+export const BOSSES: BossDef[] = [
+  { id: "caged", name: "The Caged Beast", img: `${B}art/boss-caged.jpg`, baseHp: 600, reward: 800 },
+  { id: "chariot", name: "Rival Dynasty Charioteer", img: `${B}art/boss-chariot.jpg`, baseHp: 2600, reward: 3400 },
+  { id: "kekius", name: "Kekius the Tyrant", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000 },
+];
+
+export const FIGHT_COOLDOWN_MS = 6000;

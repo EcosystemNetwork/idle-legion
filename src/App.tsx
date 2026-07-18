@@ -3,21 +3,31 @@ import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
   BUILDABLE,
+  CRATE_IMG,
   IMG,
   MERCENARY_TIERS,
   RAIDS,
   RAID_ART,
+  RARITY_META,
   ROOMS,
   ROOM_ART,
   TIERS,
   TIER_PORTRAIT,
 } from "./game/config";
 import {
+  arenaSquad,
+  arenaSquadPower,
   buildCost,
+  currentBoss,
   dwellerById,
   dwellerMight,
+  equippedGearDefs,
   formatNum,
+  gearDefOf,
+  inventoryGear,
   isOnRaid,
+  objectiveLabel,
+  objectiveProgress,
   raidSquadMight,
   recruitCost,
   roomCapacity,
@@ -25,26 +35,26 @@ import {
   roomStoreCap,
   maxPopulation,
   upgradeCost,
+  type Pull,
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { Dweller, GameState, Room, Tier } from "./game/types";
+import type { Dweller, GameState, GearSlot, Room, Tier } from "./game/types";
 import "./App.css";
 
 function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "stronghold" | "legion" | "raids" | "warchest";
-type Actions = ReturnType<typeof useGame>["actions"];
-type Stats = ReturnType<typeof useGame>["stats"];
+type Tab = "stronghold" | "legion" | "arena" | "raids" | "warchest";
+type Game = ReturnType<typeof useGame>;
+type Actions = Game["actions"];
+type Stats = Game["stats"];
 type Wallet = ReturnType<typeof useWallet>;
 
-const RESOURCE_IMG: Record<string, string> = {
-  gold: IMG.gold,
-  provisions: IMG.provisions,
-};
-
+const RESOURCE_IMG: Record<string, string> = { gold: IMG.gold, provisions: IMG.provisions };
+const SLOT_ICON: Record<GearSlot, string> = { weapon: "⚔️", armor: "🛡️", mount: "🐎" };
+const SLOT_LABEL: Record<GearSlot, string> = { weapon: "Weapon", armor: "Armor", mount: "Mount" };
 const RARITY: Record<Tier, { name: string; color: string; stars: number }> = {
   recruit: { name: "Common", color: "#9aa6b2", stars: 1 },
   spearman: { name: "Uncommon", color: "#5fe38a", stars: 2 },
@@ -52,33 +62,28 @@ const RARITY: Record<Tier, { name: string; color: string; stars: number }> = {
   cavalry: { name: "Epic", color: "#b072ff", stars: 4 },
   champion: { name: "Legendary", color: "#ffc233", stars: 5 },
 };
-
 function stars(n: number) {
   return "★".repeat(n) + "☆".repeat(5 - n);
 }
 
-// ---------------- Standing figure (character) ----------------
+// ---------------- character figure (draggable) ----------------
 
-function Figure({
-  d,
-  onClick,
-  title,
-}: {
-  d: Dweller;
-  onClick?: () => void;
-  title?: string;
-}) {
+function Figure({ d, onClick }: { d: Dweller; onClick?: () => void }) {
   const delay = (d.id.charCodeAt(d.id.length - 1) % 10) * 0.15;
+  const geared = d.equipped.weapon || d.equipped.armor || d.equipped.mount;
   return (
     <button
       type="button"
       className={`fig apt-${d.aptitude}`}
+      draggable
+      onDragStart={(e) => e.dataTransfer.setData("text/plain", d.id)}
       style={{ animationDelay: `${delay}s` }}
-      title={title ?? `${d.name} · ${TIERS[d.tier].name} · Lv${d.level} · ${APTITUDE_LABEL[d.aptitude]}`}
+      title={`${d.name} · ${TIERS[d.tier].name} · Lv${d.level} · drag to assign`}
       onClick={onClick}
     >
       <img className="fig-img" src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
       <span className="fig-lvl">{d.level}</span>
+      {geared && <span className="fig-gear">⚔</span>}
       <span className="fig-shadow" aria-hidden />
     </button>
   );
@@ -96,14 +101,23 @@ function GhostFigure({ onClick }: { onClick: () => void }) {
 // ---------------- App ----------------
 
 export default function App() {
-  const { state, stats, error: gameError, now, actions } = useGame();
+  const game = useGame();
+  const { state, stats, error: gameError, now, actions } = game;
   const wallet = useWallet();
   const [tab, setTab] = useState<Tab>("stronghold");
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
+  const [heroId, setHeroId] = useState<string | null>(null);
+  const [reveal, setReveal] = useState<Pull | null>(null);
   const [email, setEmail] = useState("");
   const [fundAmount, setFundAmount] = useState("0.1");
 
   const assignRoom = assignRoomId ? state.rooms.find((r) => r.id === assignRoomId) : null;
+  const hero = heroId ? dwellerById(state, heroId) : null;
+
+  const openBox = () => {
+    const pull = game.openLunchbox();
+    if (pull) setReveal(pull);
+  };
 
   const onFund = async () => {
     const result = await wallet.fundWarChest(fundAmount);
@@ -123,7 +137,7 @@ export default function App() {
           </span>
           <div>
             <h1>Idle Legion</h1>
-            <p className="tagline">Build the stronghold · Raise a dynasty · Fund the war on-chain</p>
+            <p className="tagline">Collect heroes · Forge gear · Raid & rule the arena — funded on-chain</p>
           </div>
         </div>
         <div className="track-badge">
@@ -133,14 +147,14 @@ export default function App() {
         </div>
       </header>
 
-      <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} />
+      <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} onOpenBox={openBox} />
 
       {state.incident && (
         <div className="banner incident" role="alert">
           <span className="incident-icon">🔥</span>
           <strong>{state.incident.label}</strong>
           <span className="muted small">
-            The legion is fighting it off — {Math.max(0, Math.ceil((state.incident.endsAt - now) / 1000))}s
+            fighting it off — {Math.max(0, Math.ceil((state.incident.endsAt - now) / 1000))}s
           </span>
         </div>
       )}
@@ -150,6 +164,7 @@ export default function App() {
           [
             ["stronghold", "🏰 Stronghold"],
             ["legion", "🛡️ Legion"],
+            ["arena", "⚔️ Arena"],
             ["raids", "🗺️ Raids"],
             ["warchest", "🏦 War Chest"],
           ] as const
@@ -157,6 +172,7 @@ export default function App() {
           <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
             {label}
             {id === "warchest" && state.mercenaryBoost > 0 && <i className="dot" />}
+            {id === "legion" && state.lunchboxes > 0 && <i className="dot gift" />}
           </button>
         ))}
       </nav>
@@ -183,12 +199,17 @@ export default function App() {
           now={now}
           actions={actions}
           onAssign={(id) => setAssignRoomId(id)}
+          onHero={(id) => setHeroId(id)}
           onOpenWarChest={() => setTab("warchest")}
           onOpenRaids={() => setTab("raids")}
         />
       )}
 
-      {tab === "legion" && <LegionView state={state} actions={actions} />}
+      {tab === "legion" && (
+        <LegionView state={state} actions={actions} onHero={(id) => setHeroId(id)} onOpenBox={openBox} />
+      )}
+
+      {tab === "arena" && <ArenaView game={game} />}
 
       {tab === "raids" && <RaidsView state={state} now={now} actions={actions} />}
 
@@ -209,14 +230,29 @@ export default function App() {
           room={assignRoom}
           state={state}
           actions={actions}
+          onHero={(id) => {
+            setAssignRoomId(null);
+            setHeroId(id);
+          }}
           onClose={() => setAssignRoomId(null)}
+        />
+      )}
+
+      {hero && <HeroModal d={hero} state={state} actions={actions} onClose={() => setHeroId(null)} />}
+
+      {reveal && (
+        <RevealModal
+          pull={reveal}
+          more={state.lunchboxes}
+          onAgain={openBox}
+          onClose={() => setReveal(null)}
         />
       )}
 
       <footer className="foot">
         <p>
-          UXMaxx · Universal Accounts track · original Idle Legion build · EIP-7702
-          chain-abstracted EOA · settlement on Arbitrum
+          UXMaxx · Universal Accounts track · original Idle Legion build · EIP-7702 chain-abstracted
+          EOA · settlement on Arbitrum
         </p>
         <button type="button" className="btn ghost" onClick={() => actions.reset()}>
           Reset save
@@ -226,85 +262,66 @@ export default function App() {
   );
 }
 
-// ---------------- Resource bar ----------------
+// ---------------- resource bar ----------------
 
 function ResourceBar({
   state,
   stats,
   wallet,
   onCollectAll,
+  onOpenBox,
 }: {
   state: GameState;
   stats: Stats;
   wallet: Wallet;
   onCollectAll: () => void;
+  onOpenBox: () => void;
 }) {
   const anyReady = state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1);
   return (
     <section className="resources">
-      <div className="chip-stat gold">
-        <span className="ci">🪙</span>
+      <Chip cls="gold" icon="🪙" v={formatNum(state.gold)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
+      <Chip
+        cls={`prov ${stats.fed ? "" : "warn"}`}
+        icon="🌾"
+        v={formatNum(state.provisions)}
+        s={`${stats.provisionsPerSec >= 0 ? "+" : ""}${stats.provisionsPerSec.toFixed(2)}/s${stats.fed ? "" : " · STARVING"}`}
+      />
+      <Chip cls="pop" icon="🛡️" v={`${stats.population}/${maxPopulation(state)}`} s={`${stats.idleCount} idle`} />
+      <Chip cls="might" icon="⚔️" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
+      <button className={`chip-stat gift ${state.lunchboxes > 0 ? "hot" : ""}`} onClick={onOpenBox} disabled={state.lunchboxes <= 0}>
+        <span className="ci">🎁</span>
         <span className="cv">
-          <b>{formatNum(state.gold)}</b>
-          <small>+{stats.goldPerSec.toFixed(1)}/s</small>
+          <b>{state.lunchboxes}</b>
+          <small>open crate</small>
         </span>
-      </div>
-      <div className={`chip-stat prov ${stats.fed ? "" : "warn"}`}>
-        <span className="ci">🌾</span>
-        <span className="cv">
-          <b>{formatNum(state.provisions)}</b>
-          <small>
-            {stats.provisionsPerSec >= 0 ? "+" : ""}
-            {stats.provisionsPerSec.toFixed(2)}/s {stats.fed ? "" : "· STARVING"}
-          </small>
-        </span>
-      </div>
-      <div className="chip-stat pop">
-        <span className="ci">🛡️</span>
-        <span className="cv">
-          <b>
-            {stats.population}
-            <span className="cap">/{maxPopulation(state)}</span>
-          </b>
-          <small>{stats.idleCount} idle</small>
-        </span>
-      </div>
-      <div className="chip-stat might">
-        <span className="ci">⚔️</span>
-        <span className="cv">
-          <b>{Math.floor(stats.might)}</b>
-          <small>{state.totalRaids} raids</small>
-        </span>
-      </div>
-      <div className="chip-stat merc">
-        <span className="ci">🎖️</span>
-        <span className="cv">
-          <b>+{Math.round(state.mercenaryBoost * 100)}%</b>
-          <small>chest ${state.warChestUsd.toFixed(2)}</small>
-        </span>
-      </div>
-      <div className="chip-stat onchain">
-        <span className="ci">🔗</span>
-        <span className="cv">
-          <b>
-            {wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
-          </b>
-          <small>{wallet.session ? shortAddr(wallet.session.address) : "offline"}</small>
-        </span>
-      </div>
-      <button
-        type="button"
-        className={`collect-all ${anyReady ? "ready" : ""}`}
-        disabled={!anyReady}
-        onClick={onCollectAll}
-      >
+      </button>
+      <Chip
+        cls="onchain"
+        icon="🔗"
+        v={wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
+        s={wallet.session ? shortAddr(wallet.session.address) : "offline"}
+      />
+      <button type="button" className={`collect-all ${anyReady ? "ready" : ""}`} disabled={!anyReady} onClick={onCollectAll}>
         Collect all
       </button>
     </section>
   );
 }
 
-// ---------------- Stronghold (vertical chambers) ----------------
+function Chip({ cls, icon, v, s }: { cls: string; icon: string; v: string; s: string }) {
+  return (
+    <div className={`chip-stat ${cls}`}>
+      <span className="ci">{icon}</span>
+      <span className="cv">
+        <b>{v}</b>
+        <small>{s}</small>
+      </span>
+    </div>
+  );
+}
+
+// ---------------- stronghold ----------------
 
 function StrongholdView({
   state,
@@ -312,6 +329,7 @@ function StrongholdView({
   now,
   actions,
   onAssign,
+  onHero,
   onOpenWarChest,
   onOpenRaids,
 }: {
@@ -320,6 +338,7 @@ function StrongholdView({
   now: number;
   actions: Actions;
   onAssign: (roomId: string) => void;
+  onHero: (id: string) => void;
   onOpenWarChest: () => void;
   onOpenRaids: () => void;
 }) {
@@ -327,7 +346,7 @@ function StrongholdView({
     <section className="vault">
       <div className="vault-sky">
         <span className="cloud c1">☁️</span>
-        <span className="sun">🌄 THE SURFACE</span>
+        <span className="sun">🌄 THE SURFACE · drag heroes between rooms</span>
         <span className="cloud c2">☁️</span>
       </div>
       <div className="vault-body">
@@ -346,6 +365,7 @@ function StrongholdView({
               now={now}
               actions={actions}
               onAssign={onAssign}
+              onHero={onHero}
               onOpenWarChest={onOpenWarChest}
               onOpenRaids={onOpenRaids}
             />
@@ -366,6 +386,7 @@ function Chamber({
   now,
   actions,
   onAssign,
+  onHero,
   onOpenWarChest,
   onOpenRaids,
 }: {
@@ -375,9 +396,11 @@ function Chamber({
   now: number;
   actions: Actions;
   onAssign: (roomId: string) => void;
+  onHero: (id: string) => void;
   onOpenWarChest: () => void;
   onOpenRaids: () => void;
 }) {
+  const [over, setOver] = useState(false);
   const def = ROOMS[room.type];
   const cap = roomCapacity(room);
   const storeCap = roomStoreCap(room);
@@ -389,14 +412,33 @@ function Chamber({
   const incident = state.incident?.roomId === room.id ? state.incident : null;
   const upCost = upgradeCost(room);
   const resImg = def.produces ? RESOURCE_IMG[def.produces] : null;
-
   const resting =
     room.type === "hall"
       ? state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id)).slice(0, 6)
       : [];
 
+  const acceptsDrop = cap > 0 || room.type === "hall";
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setOver(false);
+    const id = e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    if (room.type === "hall") actions.unassign(id);
+    else if (cap > 0) actions.assign(id, room.id);
+  };
+
   return (
-    <div className={`chamber ${room.type} ${incident ? "on-fire" : ""} ${ready ? "is-ready" : ""}`}>
+    <div
+      className={`chamber ${room.type} ${incident ? "on-fire" : ""} ${ready ? "is-ready" : ""} ${over ? "drop-over" : ""}`}
+      onDragOver={(e) => {
+        if (acceptsDrop) {
+          e.preventDefault();
+          setOver(true);
+        }
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={onDrop}
+    >
       <img className="ch-art" src={ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
       <div className="ch-glow" aria-hidden />
 
@@ -404,22 +446,20 @@ function Chamber({
         <span className="ch-icon">{def.icon}</span>
         <span className="ch-name">{def.name}</span>
         <span className="ch-lvl">Lv {room.level}</span>
-        {def.aptitude && (
-          <span className="ch-apt">{APTITUDE_ICON[def.aptitude]}</span>
-        )}
+        {def.aptitude && <span className="ch-apt">{APTITUDE_ICON[def.aptitude]}</span>}
       </div>
 
       <div className="ch-stage">
         <div className="crew">
           {workers.map((d) => (
-            <Figure key={d.id} d={d} onClick={() => actions.unassign(d.id)} />
+            <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
           ))}
           {cap > 0 &&
             Array.from({ length: Math.max(0, cap - workers.length) }).map((_, i) => (
               <GhostFigure key={i} onClick={() => onAssign(room.id)} />
             ))}
           {resting.map((d) => (
-            <Figure key={d.id} d={d} title={`${d.name} · idle in the Hall`} />
+            <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
           ))}
         </div>
         <div className="ch-ground" aria-hidden />
@@ -443,22 +483,12 @@ function Chamber({
         )}
         <div className="ch-ctrls">
           {def.produces && (
-            <button
-              type="button"
-              className="chip-btn"
-              title="Rush: instantly fill storage — risks an incident"
-              onClick={() => actions.rush(room.id)}
-            >
+            <button type="button" className="chip-btn" title="Rush — risks an incident" onClick={() => actions.rush(room.id)}>
               ⚡
             </button>
           )}
           {cap > 0 && (
-            <button
-              type="button"
-              className="chip-btn"
-              title="Auto-staff from idle dwellers"
-              onClick={() => actions.autoStaff(room.id)}
-            >
+            <button type="button" className="chip-btn" title="Auto-staff" onClick={() => actions.autoStaff(room.id)}>
               👥
             </button>
           )}
@@ -473,13 +503,7 @@ function Chamber({
             </button>
           )}
           {room.type !== "warchest" && (
-            <button
-              type="button"
-              className="chip-btn up"
-              disabled={state.gold < upCost}
-              onClick={() => actions.upgrade(room.id)}
-              title={`Upgrade to Lv ${room.level + 1}`}
-            >
+            <button type="button" className="chip-btn up" disabled={state.gold < upCost} onClick={() => actions.upgrade(room.id)}>
               ▲ {formatNum(upCost)}
             </button>
           )}
@@ -506,13 +530,7 @@ function BuildMenu({ state, actions }: { state: GameState; actions: Actions }) {
           const exists = def.unique && state.rooms.some((r) => r.type === type);
           const cost = buildCost(type);
           return (
-            <button
-              key={type}
-              className={`build-btn ${type}`}
-              disabled={exists || state.gold < cost}
-              onClick={() => actions.build(type)}
-              title={def.description}
-            >
+            <button key={type} className={`build-btn ${type}`} disabled={exists || state.gold < cost} onClick={() => actions.build(type)} title={def.description}>
               <span className="bi">{def.icon}</span>
               <span className="bn">{def.name}</span>
               <span className="bc">{exists ? "built" : `🪙 ${formatNum(cost)}`}</span>
@@ -524,9 +542,19 @@ function BuildMenu({ state, actions }: { state: GameState; actions: Actions }) {
   );
 }
 
-// ---------------- Legion — gacha hero cards ----------------
+// ---------------- legion ----------------
 
-function LegionView({ state, actions }: { state: GameState; actions: Actions }) {
+function LegionView({
+  state,
+  actions,
+  onHero,
+  onOpenBox,
+}: {
+  state: GameState;
+  actions: Actions;
+  onHero: (id: string) => void;
+  onOpenBox: () => void;
+}) {
   const cost = recruitCost(state);
   const full = state.dwellers.length >= maxPopulation(state);
   const sorted = [...state.dwellers].sort(
@@ -534,14 +562,10 @@ function LegionView({ state, actions }: { state: GameState; actions: Actions }) 
   );
   return (
     <section className="panel legion">
+      <Objectives state={state} actions={actions} onOpenBox={onOpenBox} />
       <div className="panel-head">
         <h2>🛡️ The Legion · {state.dwellers.length}/{maxPopulation(state)}</h2>
-        <button
-          type="button"
-          className="btn"
-          disabled={full || state.gold < cost}
-          onClick={() => actions.recruit()}
-        >
+        <button type="button" className="btn" disabled={full || state.gold < cost} onClick={() => actions.recruit()}>
           {full ? "Hall full" : `Recruit · 🪙 ${formatNum(cost)}`}
         </button>
       </div>
@@ -550,11 +574,13 @@ function LegionView({ state, actions }: { state: GameState; actions: Actions }) 
           const room = d.roomId ? state.rooms.find((r) => r.id === d.roomId) : null;
           const out = isOnRaid(state, d.id);
           const r = RARITY[d.tier];
+          const geared = equippedGearDefs(state, d).length;
           return (
-            <article
+            <button
               key={d.id}
               className={`gacha apt-${d.aptitude}`}
               style={{ ["--rar" as string]: r.color }}
+              onClick={() => onHero(d.id)}
             >
               <div className="gacha-frame">
                 <div className="gacha-top">
@@ -564,29 +590,22 @@ function LegionView({ state, actions }: { state: GameState; actions: Actions }) 
                 <div className="gacha-portrait">
                   <img src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
                   <span className="gacha-apt">{APTITUDE_ICON[d.aptitude]}</span>
-                  <span className="gacha-might">{Math.floor(dwellerMight(d))} ⚔</span>
+                  <span className="gacha-might">{Math.floor(dwellerMight(d, state))} ⚔</span>
+                  {geared > 0 && <span className="gacha-gear">{geared}⚙</span>}
                 </div>
                 <div className="gacha-name">{d.name}</div>
                 <div className="gacha-stars">{stars(r.stars)}</div>
-                <div className="xpbar">
-                  <i style={{ width: `${Math.min(100, (d.xp / (d.level * 100)) * 100)}%` }} />
-                </div>
                 <div className="gacha-foot">
                   {out ? (
                     <span className="badge raid">On raid</span>
                   ) : room ? (
-                    <>
-                      <span className="badge">{ROOMS[room.type].icon} {ROOMS[room.type].name}</span>
-                      <button className="chip-btn" onClick={() => actions.unassign(d.id)}>
-                        Recall
-                      </button>
-                    </>
+                    <span className="badge">{ROOMS[room.type].icon} {ROOMS[room.type].name}</span>
                   ) : (
-                    <span className="badge idle">Idle · assign in a room</span>
+                    <span className="badge idle">Idle · tap to equip</span>
                   )}
                 </div>
               </div>
-            </article>
+            </button>
           );
         })}
       </div>
@@ -594,7 +613,100 @@ function LegionView({ state, actions }: { state: GameState; actions: Actions }) 
   );
 }
 
-// ---------------- Raids — arena battle stages ----------------
+function Objectives({ state, actions, onOpenBox }: { state: GameState; actions: Actions; onOpenBox: () => void }) {
+  return (
+    <div className="objectives">
+      <div className="obj-head">
+        <span>🎯 OBJECTIVES</span>
+        <button className={`crate-btn ${state.lunchboxes > 0 ? "hot" : ""}`} disabled={state.lunchboxes <= 0} onClick={onOpenBox}>
+          🎁 Open Lunchbox · {state.lunchboxes}
+        </button>
+      </div>
+      <div className="obj-row">
+        {state.objectives.map((o) => {
+          const prog = objectiveProgress(state, o);
+          const done = prog >= o.target;
+          return (
+            <div key={o.id} className={`obj ${done ? "done" : ""}`}>
+              <div className="obj-label">{objectiveLabel(o)}</div>
+              <div className="obj-bar">
+                <i style={{ width: `${Math.min(100, (prog / o.target) * 100)}%` }} />
+              </div>
+              <div className="obj-foot">
+                <span>{formatNum(Math.min(prog, o.target))}/{formatNum(o.target)}</span>
+                <button className="chip-btn" disabled={!done} onClick={() => actions.claimObjective(o.id)}>
+                  🎁 +{o.reward}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- arena ----------------
+
+function ArenaView({ game }: { game: Game }) {
+  const { state, now, fightBoss } = game;
+  const [flash, setFlash] = useState<string | null>(null);
+  const boss = currentBoss(state);
+  const squad = arenaSquad(state);
+  const power = Math.floor(arenaSquadPower(state));
+  const hpFrac = Math.max(0, state.arena.bossHp) / bossMaxHp(state);
+  const cd = Math.max(0, 6000 - (now - state.arena.lastFightAt));
+  const onFight = () => {
+    const res = fightBoss();
+    if (res) setFlash(res.killed ? `💥 ${res.bossName} DEFEATED! +${formatNum(res.reward)}g +🎁` : `Hit for ${formatNum(res.damage)}!`);
+  };
+  return (
+    <section className="panel arena">
+      <div className="panel-head">
+        <h2>⚔️ The Arena · World Boss</h2>
+        <div className="rank-chip">🏆 Rank #{state.arena.rank} · {state.arena.wins} wins</div>
+      </div>
+
+      <div className="boss-stage" style={{ backgroundImage: `url(${boss.img})` }}>
+        <div className="boss-veil" />
+        <div className="boss-body">
+          <div className="boss-name">{boss.name}</div>
+          <div className="boss-hpbar">
+            <i style={{ width: `${hpFrac * 100}%` }} />
+            <b>{formatNum(Math.max(0, state.arena.bossHp))} HP</b>
+          </div>
+          {flash && <div className="boss-flash">{flash}</div>}
+        </div>
+      </div>
+
+      <div className="arena-controls">
+        <div className="squad-info">
+          <div className="squad-power">Squad power <b>{power} ⚔</b></div>
+          <div className="squad-figs">
+            {squad.slice(0, 8).map((d) => (
+              <img key={d.id} className="squad-fig" src={TIER_PORTRAIT[d.tier]} alt={d.name} title={`${d.name} · ${Math.floor(dwellerMight(d, state))}⚔`} />
+            ))}
+            {squad.length === 0 && <span className="muted small">No idle heroes — recall some from rooms/raids.</span>}
+          </div>
+        </div>
+        <button type="button" className="btn big" disabled={cd > 0 || squad.length === 0} onClick={onFight}>
+          {cd > 0 ? `Regrouping ${Math.ceil(cd / 1000)}s` : "⚔ FIGHT"}
+        </button>
+      </div>
+      <p className="muted small">
+        Idle heroes form your squad. Beat the boss to earn gold + a 🎁 lunchbox and climb the ladder. Equip gear in the Legion tab to hit harder.
+      </p>
+    </section>
+  );
+}
+
+function bossMaxHp(state: GameState): number {
+  // for the HP bar we track relative to the boss's spawn HP; approximate with current max seen
+  const boss = currentBoss(state);
+  return Math.max(state.arena.bossHp, boss.baseHp);
+}
+
+// ---------------- raids ----------------
 
 function RaidsView({ state, now, actions }: { state: GameState; now: number; actions: Actions }) {
   const hasWarRoom = state.rooms.some((r) => r.type === "warroom");
@@ -603,21 +715,17 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
   const mission = raid ? RAIDS.find((m) => m.id === raid.missionId) : null;
   const raidLeft = raid ? Math.max(0, Math.ceil((raid.endsAt - now) / 1000)) : 0;
   const raidDone = raid ? now >= raid.endsAt : false;
-  const raidProg =
-    raid && mission ? Math.min(1, (now - raid.startedAt) / (raid.endsAt - raid.startedAt)) : 0;
+  const raidProg = raid && mission ? Math.min(1, (now - raid.startedAt) / (raid.endsAt - raid.startedAt)) : 0;
 
   return (
     <section className="panel raids">
       <div className="panel-head">
-        <h2>🗺️ Raids · the Arena</h2>
+        <h2>🗺️ Raids · the Wastes</h2>
         <p className="muted small">
-          Idle squad might: <strong>{Math.floor(squadMight)} ⚔</strong> · sends all idle dwellers
+          Idle squad might: <strong>{Math.floor(squadMight)} ⚔</strong> · every raid drops a 🎁 lunchbox
         </p>
       </div>
-
-      {!hasWarRoom && (
-        <p className="muted small warn">Dig a 🗺️ War Room in the Stronghold to launch raids.</p>
-      )}
+      {!hasWarRoom && <p className="muted small warn">Dig a 🗺️ War Room in the Stronghold to launch raids.</p>}
 
       {raid && mission && (
         <div className="active-raid" style={{ backgroundImage: `url(${RAID_ART[mission.id]})` }}>
@@ -628,16 +736,9 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
               <div className="prod-meter big">
                 <i style={{ width: `${raidProg * 100}%` }} className={raidDone ? "full" : ""} />
               </div>
-              <span className="muted small">
-                {raid.squad.length} dwellers out · {raidDone ? "returned!" : `${raidLeft}s`}
-              </span>
+              <span className="muted small">{raid.squad.length} out · {raidDone ? "returned!" : `${raidLeft}s`}</span>
             </div>
-            <button
-              type="button"
-              className="btn"
-              disabled={!raidDone}
-              onClick={() => actions.claimRaid()}
-            >
+            <button type="button" className="btn" disabled={!raidDone} onClick={() => actions.claimRaid()}>
               {raidDone ? "Claim loot" : "Marching…"}
             </button>
           </div>
@@ -648,11 +749,7 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
         {RAIDS.map((m) => {
           const locked = squadMight < m.minMight;
           return (
-            <article
-              key={m.id}
-              className={`stage ${locked ? "locked" : ""}`}
-              style={{ backgroundImage: `url(${RAID_ART[m.id]})` }}
-            >
+            <article key={m.id} className={`stage ${locked ? "locked" : ""}`} style={{ backgroundImage: `url(${RAID_ART[m.id]})` }}>
               <div className="stage-veil" />
               <div className="stage-body">
                 <div className="stage-head">
@@ -665,12 +762,7 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
                   <span className={locked ? "req warn" : "req"}>⚔ ≥{m.minMight}</span>
                   <span>🪙 +{formatNum(m.goldReward)}</span>
                 </div>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={locked || Boolean(raid) || !hasWarRoom}
-                  onClick={() => actions.startRaid(m.id)}
-                >
+                <button type="button" className="btn" disabled={locked || Boolean(raid) || !hasWarRoom} onClick={() => actions.startRaid(m.id)}>
                   {locked ? "Need more might" : raid ? "Raid in progress" : "⚔ March to battle"}
                 </button>
               </div>
@@ -682,7 +774,165 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
   );
 }
 
-// ---------------- War Chest ----------------
+// ---------------- hero detail modal (equipment) ----------------
+
+function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameState; actions: Actions; onClose: () => void }) {
+  const [pickSlot, setPickSlot] = useState<GearSlot | null>(null);
+  const r = RARITY[d.tier];
+  const room = d.roomId ? state.rooms.find((x) => x.id === d.roomId) : null;
+  const out = isOnRaid(state, d.id);
+  const might = Math.floor(dwellerMight(d, state));
+  const inv = inventoryGear(state).filter((g) => (pickSlot ? gearDefOf(g).slot === pickSlot : true));
+
+  const equippedItem = (slot: GearSlot) => {
+    const id = d.equipped[slot];
+    if (!id) return null;
+    const item = state.gear.find((g) => g.id === id);
+    return item ? gearDefOf(item) : null;
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal hero-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 style={{ color: r.color }}>{d.name}</h3>
+          <button className="chip-btn" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="hm-top">
+          <div className="hm-portrait" style={{ ["--rar" as string]: r.color }}>
+            <img src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} />
+          </div>
+          <div className="hm-info">
+            <div className="hm-tier" style={{ color: r.color }}>
+              {TIERS[d.tier].icon} {TIERS[d.tier].name} · {r.name}
+            </div>
+            <div className="gacha-stars" style={{ ["--rar" as string]: r.color }}>{stars(r.stars)}</div>
+            <div className="hm-stats">
+              <span>Lv {d.level}</span>
+              <span>{APTITUDE_ICON[d.aptitude]} {APTITUDE_LABEL[d.aptitude]}</span>
+              <span className="hm-might">{might} ⚔ might</span>
+            </div>
+            <div className="hm-status">
+              {out ? (
+                <span className="badge raid">On raid</span>
+              ) : room ? (
+                <>
+                  <span className="badge">{ROOMS[room.type].icon} {ROOMS[room.type].name}</span>
+                  <button className="chip-btn" onClick={() => actions.unassign(d.id)}>Recall</button>
+                </>
+              ) : (
+                <span className="badge idle">Idle</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <h4 className="ml">Equipment</h4>
+        <div className="slots">
+          {(["weapon", "armor", "mount"] as GearSlot[]).map((slot) => {
+            const g = equippedItem(slot);
+            return (
+              <div key={slot} className="slot-row">
+                <button
+                  className={`slot ${g ? "filled" : ""}`}
+                  style={g ? { ["--rar" as string]: RARITY_META[g.rarity].color } : undefined}
+                  onClick={() => setPickSlot(pickSlot === slot ? null : slot)}
+                >
+                  {g ? <img src={g.img} alt={g.name} /> : <span className="slot-ic">{SLOT_ICON[slot]}</span>}
+                </button>
+                <div className="slot-info">
+                  <div className="slot-label">{SLOT_LABEL[slot]}</div>
+                  {g ? (
+                    <>
+                      <div className="slot-name" style={{ color: RARITY_META[g.rarity].color }}>{g.name}</div>
+                      <div className="slot-bonus">+{g.might}⚔ {g.output ? `· +${g.output}/s` : ""}</div>
+                    </>
+                  ) : (
+                    <div className="muted small">empty — tap to equip</div>
+                  )}
+                </div>
+                {g && (
+                  <button className="chip-btn" onClick={() => actions.unequip(d.id, slot)}>Unequip</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {pickSlot && (
+          <>
+            <h4 className="ml">Choose {SLOT_LABEL[pickSlot]} ({inv.length})</h4>
+            <div className="gear-picker">
+              {inv.length === 0 && <p className="muted small">No {SLOT_LABEL[pickSlot].toLowerCase()} in the armory. Open lunchboxes to find gear.</p>}
+              {inv.map((item) => {
+                const g = gearDefOf(item);
+                return (
+                  <button
+                    key={item.id}
+                    className="gpick"
+                    style={{ ["--rar" as string]: RARITY_META[g.rarity].color }}
+                    onClick={() => {
+                      actions.equip(d.id, item.id);
+                      setPickSlot(null);
+                    }}
+                  >
+                    <img src={g.img} alt={g.name} />
+                    <span className="gp-name" style={{ color: RARITY_META[g.rarity].color }}>{g.name}</span>
+                    <span className="gp-bonus">+{g.might}⚔{g.output ? ` +${g.output}/s` : ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- lunchbox reveal ----------------
+
+function RevealModal({ pull, more, onAgain, onClose }: { pull: Pull; more: number; onAgain: () => void; onClose: () => void }) {
+  let img = CRATE_IMG;
+  let title = "";
+  let sub = "";
+  let color = "#ffc233";
+  if (pull.kind === "gold") {
+    img = IMG.gold;
+    title = `+${formatNum(pull.gold)} Gold`;
+    sub = "Sestertii for the war chest";
+    color = "#ffc233";
+  } else if (pull.kind === "gear") {
+    img = pull.def.img;
+    title = pull.def.name;
+    sub = `${RARITY_META[pull.rarity].name} ${pull.def.slot} · +${pull.def.might}⚔${pull.def.output ? ` +${pull.def.output}/s` : ""}`;
+    color = RARITY_META[pull.rarity].color;
+  } else {
+    img = TIER_PORTRAIT[pull.dweller.tier];
+    title = `${pull.dweller.name} joins!`;
+    sub = `${TIERS[pull.dweller.tier].name} · ${RARITY[pull.dweller.tier].name}`;
+    color = RARITY[pull.dweller.tier].color;
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal reveal" onClick={(e) => e.stopPropagation()} style={{ ["--rar" as string]: color }}>
+        <div className="reveal-burst" />
+        <div className="reveal-card">
+          <img className="reveal-img" src={img} alt={title} />
+        </div>
+        <div className="reveal-title" style={{ color }}>{title}</div>
+        <div className="reveal-sub">{sub}</div>
+        <div className="reveal-actions">
+          <button className="btn secondary" onClick={onClose}>Nice</button>
+          <button className="btn" disabled={more <= 0} onClick={onAgain}>🎁 Open another · {more}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- war chest ----------------
 
 function WarChestView({
   state,
@@ -708,10 +958,9 @@ function WarChestView({
         <div className="wc-hero-body">
           <h2>🏦 Treasury Vault</h2>
           <p className="muted">
-            Fund the war with <strong>any-chain</strong> assets. Universal Accounts (
-            <code>EIP-7702</code>) route value and land <strong>USDT on Arbitrum</strong> — no bridge
-            UI, no chain switch. Funding hires a permanent <strong>Free Company</strong> that boosts
-            every room.
+            Fund the war with <strong>any-chain</strong> assets. Universal Accounts (<code>EIP-7702</code>) route value and
+            land <strong>USDT on Arbitrum</strong> — no bridge UI, no chain switch. Funding hires a permanent{" "}
+            <strong>Free Company</strong> that boosts every room.
           </p>
         </div>
       </div>
@@ -721,67 +970,27 @@ function WarChestView({
           <>
             <h3>Enter the field</h3>
             {wallet.caps.magic ? (
-              <form
-                className="email-row"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (email.trim()) void wallet.loginMagic(email.trim());
-                }}
-              >
-                <input
-                  type="email"
-                  placeholder="you@email.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-                <button type="submit" className="btn" disabled={wallet.busy}>
-                  Magic login
-                </button>
+              <form className="email-row" onSubmit={(e) => { e.preventDefault(); if (email.trim()) void wallet.loginMagic(email.trim()); }}>
+                <input type="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                <button type="submit" className="btn" disabled={wallet.busy}>Magic login</button>
               </form>
             ) : (
-              <p className="muted small">
-                Set <code>VITE_MAGIC_PUBLISHABLE_KEY</code> for email wallets.
-              </p>
+              <p className="muted small">Set <code>VITE_MAGIC_PUBLISHABLE_KEY</code> for email wallets.</p>
             )}
-            <button
-              type="button"
-              className="btn secondary"
-              disabled={wallet.busy}
-              onClick={() => void wallet.loginInjected()}
-            >
+            <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.loginInjected()}>
               Connect browser wallet
             </button>
           </>
         ) : (
           <div className="session">
             <div>
-              <strong>
-                {wallet.session.method === "magic" ? "Magic" : "Wallet"} ·{" "}
-                {shortAddr(wallet.session.address)}
-              </strong>
+              <strong>{wallet.session.method === "magic" ? "Magic" : "Wallet"} · {shortAddr(wallet.session.address)}</strong>
               {wallet.session.email && <div className="muted small">{wallet.session.email}</div>}
-              {wallet.uaAddress && (
-                <div className="muted small">UA / 7702 · {shortAddr(wallet.uaAddress)}</div>
-              )}
+              {wallet.uaAddress && <div className="muted small">UA / 7702 · {shortAddr(wallet.uaAddress)}</div>}
             </div>
             <div className="session-actions">
-              <button
-                type="button"
-                className="btn secondary"
-                disabled={wallet.busy}
-                onClick={() => void wallet.refreshBalances()}
-              >
-                Refresh balance
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                disabled={wallet.busy}
-                onClick={() => void wallet.logout()}
-              >
-                Logout
-              </button>
+              <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.refreshBalances()}>Refresh balance</button>
+              <button type="button" className="btn ghost" disabled={wallet.busy} onClick={() => void wallet.logout()}>Logout</button>
             </div>
           </div>
         )}
@@ -794,9 +1003,7 @@ function WarChestView({
             {wallet.assets.map((a) => (
               <li key={a.tokenType}>
                 <span>{a.tokenType.toUpperCase()}</span>
-                <span>
-                  {a.amount.toFixed(4)} · ${a.amountInUSD.toFixed(2)}
-                </span>
+                <span>{a.amount.toFixed(4)} · ${a.amountInUSD.toFixed(2)}</span>
               </li>
             ))}
           </ul>
@@ -806,39 +1013,19 @@ function WarChestView({
       <div className="fund-box">
         <h3>Fund War Chest → Arbitrum USDT</h3>
         <p className="muted small">
-          Cross-chain transfer via Particle Universal Accounts (<code>useEIP7702: true</code>).
-          Sources liquidity from your unified Primary Assets; destination chain = Arbitrum One.
+          Cross-chain transfer via Particle Universal Accounts (<code>useEIP7702: true</code>). Sources liquidity from your unified Primary Assets; destination chain = Arbitrum One.
         </p>
         <div className="email-row">
-          <input
-            type="text"
-            inputMode="decimal"
-            value={fundAmount}
-            onChange={(e) => setFundAmount(e.target.value)}
-            aria-label="USDT amount"
-          />
-          <button
-            type="button"
-            className="btn"
-            disabled={!wallet.session || wallet.busy || !wallet.caps.particle}
-            onClick={() => void onFund()}
-          >
+          <input type="text" inputMode="decimal" value={fundAmount} onChange={(e) => setFundAmount(e.target.value)} aria-label="USDT amount" />
+          <button type="button" className="btn" disabled={!wallet.session || wallet.busy || !wallet.caps.particle} onClick={() => void onFund()}>
             {wallet.busy ? "Routing…" : `Send ${fundAmount} USDT → Arb`}
           </button>
         </div>
         {!wallet.caps.particle && (
-          <p className="muted small warn">
-            Add Particle keys in <code>.env</code> to enable live UA transfers. The stronghold plays
-            fully offline without them.
-          </p>
+          <p className="muted small warn">Add Particle keys in <code>.env</code> to enable live UA transfers. The game plays fully offline without them.</p>
         )}
         {wallet.lastTx && (
-          <p className="tx-ok">
-            Funded {wallet.lastTx.amount} USDT ·{" "}
-            <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">
-              View on UniversalX
-            </a>
-          </p>
+          <p className="tx-ok">Funded {wallet.lastTx.amount} USDT · <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">View on UniversalX</a></p>
         )}
       </div>
 
@@ -857,17 +1044,19 @@ function WarChestView({
   );
 }
 
-// ---------------- Assign modal ----------------
+// ---------------- assign modal ----------------
 
 function AssignModal({
   room,
   state,
   actions,
+  onHero,
   onClose,
 }: {
   room: Room;
   state: GameState;
   actions: Actions;
+  onHero: (id: string) => void;
   onClose: () => void;
 }) {
   const def = ROOMS[room.type];
@@ -875,29 +1064,16 @@ function AssignModal({
   const idle = state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id));
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const apt = ROOMS[room.type].aptitude;
-
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>
-            {def.icon} Staff the {def.name}
-          </h3>
-          <button className="chip-btn" onClick={onClose}>
-            ✕
-          </button>
+          <h3>{def.icon} Staff the {def.name}</h3>
+          <button className="chip-btn" onClick={onClose}>✕</button>
         </div>
         <p className="muted small">
-          {workers.length}/{cap} slots ·{" "}
-          {apt ? (
-            <>
-              prefers {APTITUDE_ICON[apt]} {APTITUDE_LABEL[apt]} (+25%)
-            </>
-          ) : (
-            "any dweller"
-          )}
+          {workers.length}/{cap} slots · {apt ? <>prefers {APTITUDE_ICON[apt]} {APTITUDE_LABEL[apt]} (+25%)</> : "any dweller"}
         </p>
-
         {workers.length > 0 && (
           <>
             <h4 className="ml">On duty</h4>
@@ -913,27 +1089,17 @@ function AssignModal({
             </div>
           </>
         )}
-
         <h4 className="ml">Idle ({idle.length})</h4>
         <div className="picker">
-          {idle.length === 0 && (
-            <p className="muted small">No idle dwellers. Recruit more in the Legion tab.</p>
-          )}
+          {idle.length === 0 && <p className="muted small">No idle dwellers. Recruit or open lunchboxes.</p>}
           {idle.map((d) => {
             const match = apt && d.aptitude === apt;
             const full = workers.length >= cap;
             return (
-              <button
-                key={d.id}
-                className={`pick ${match ? "match" : ""}`}
-                disabled={full}
-                onClick={() => actions.assign(d.id, room.id)}
-              >
-                <img className="pick-img" src={TIER_PORTRAIT[d.tier]} alt="" />
+              <button key={d.id} className={`pick ${match ? "match" : ""}`} disabled={full} onClick={() => actions.assign(d.id, room.id)}>
+                <img className="pick-img" src={TIER_PORTRAIT[d.tier]} alt="" onClick={(e) => { e.stopPropagation(); onHero(d.id); }} />
                 <span className="pn">{d.name}</span>
-                <span className="apt">
-                  {APTITUDE_ICON[d.aptitude]} {match ? "match!" : APTITUDE_LABEL[d.aptitude]}
-                </span>
+                <span className="apt">{APTITUDE_ICON[d.aptitude]} {match ? "match!" : APTITUDE_LABEL[d.aptitude]}</span>
                 <span className="px">Lv{d.level}</span>
               </button>
             );

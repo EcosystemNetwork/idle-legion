@@ -4,21 +4,28 @@ import {
   assignDweller,
   autoStaff,
   buildRoom,
+  claimObjective,
   claimRaid,
   collectAll,
   collectRoom,
   deriveStats,
+  equipGear,
+  fightBoss,
   loadState,
+  openLunchbox,
   recruitDweller,
   rushRoom,
   saveState,
   startRaid,
   tick,
   unassignDweller,
+  unequipGear,
   upgradeRoom,
+  type FightResult,
+  type Pull,
 } from "../game/engine";
 import { STORAGE_KEY } from "../game/config";
-import type { GameState, RoomType } from "../game/types";
+import type { GameState, GearSlot, RoomType } from "../game/types";
 
 export function useGame() {
   const [state, setState] = useState<GameState>(() => loadState());
@@ -52,6 +59,33 @@ export function useGame() {
     }
   }, []);
 
+  // Functions that must return a result (gacha reveal / battle log).
+  const openBox = useCallback((): Pull | null => {
+    setError(null);
+    try {
+      const { state: next, pull } = openLunchbox(tick(state, Date.now()));
+      saveState(next);
+      setState(next);
+      return pull;
+    } catch (e) {
+      setError((e as Error).message);
+      return null;
+    }
+  }, [state]);
+
+  const fight = useCallback((): FightResult | null => {
+    setError(null);
+    try {
+      const { state: next, result } = fightBoss(tick(state, Date.now()));
+      saveState(next);
+      setState(next);
+      return result;
+    } catch (e) {
+      setError((e as Error).message);
+      return null;
+    }
+  }, [state]);
+
   const actions = useMemo(
     () => ({
       recruit: () => wrap(recruitDweller),
@@ -68,6 +102,11 @@ export function useGame() {
       claimRaid: () => wrap(claimRaid),
       applyFunding: (usd: number, txId: string | null) =>
         wrap((s) => applyWarChestFunding(s, usd, txId)),
+      equip: (dwellerId: string, gearItemId: string) =>
+        wrap((s) => equipGear(s, dwellerId, gearItemId)),
+      unequip: (dwellerId: string, slot: GearSlot) =>
+        wrap((s) => unequipGear(s, dwellerId, slot)),
+      claimObjective: (objId: string) => wrap((s) => claimObjective(s, objId)),
       clearError: () => setError(null),
       reset: () => {
         localStorage.removeItem(STORAGE_KEY);
@@ -77,5 +116,5 @@ export function useGame() {
     [wrap],
   );
 
-  return { state, stats, error, now, actions };
+  return { state, stats, error, now, actions, openLunchbox: openBox, fightBoss: fight };
 }

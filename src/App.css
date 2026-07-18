@@ -657,3 +657,142 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
   .vault-body, .vault-floor { padding-left: 58px; }
   .elevator { width: 34px; }
 }
+
+/* ================= FEATURES: gacha / gear / arena / objectives ================= */
+
+/* lunchbox chip + tab dot */
+.chip-stat.gift { cursor: pointer; border: 1px solid rgba(255,255,255,0.07); }
+.chip-stat.gift .ci { background: rgba(255, 120, 200, 0.18); }
+.chip-stat.gift.hot { border-color: #ff7ad0; box-shadow: 0 0 16px -3px #ff7ad0; animation: pop 1.3s ease-in-out infinite; }
+.chip-stat.gift:disabled { opacity: 0.5; cursor: not-allowed; }
+.tabs .dot.gift { background: #ff7ad0; box-shadow: 0 0 8px #ff7ad0; }
+
+/* figure gear marker + drop highlight */
+.fig-gear {
+  position: absolute; bottom: -4px; left: -5px; z-index: 4;
+  font-size: 9px; background: #4aa8ff; color: #04121f; font-weight: 800;
+  border: 1.5px solid #000; border-radius: 6px; padding: 0 2px;
+}
+.chamber.drop-over { box-shadow: inset 0 0 0 3px #5fe38a, 0 0 30px -4px #5fe38a; }
+.chamber.drop-over .ch-art { filter: saturate(1.4) brightness(1.15); }
+.fig { touch-action: none; }
+.gacha-gear {
+  position: absolute; top: 6px; right: 6px;
+  background: rgba(74,168,255,0.85); color: #04121f; font-weight: 800; font-size: 11px;
+  padding: 2px 6px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.25);
+}
+
+/* objectives */
+.objectives {
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+  background: rgba(0,0,0,0.3); padding: 12px; margin-bottom: 14px;
+}
+.obj-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.obj-head > span { font-family: var(--font-head); color: var(--brass); letter-spacing: 1px; font-size: 13px; }
+.crate-btn {
+  border: 2px solid #000; border-radius: 10px; padding: 8px 12px; cursor: pointer; font-weight: 800;
+  background: linear-gradient(180deg, #ff9ad8, #d94fa8); color: #2a0a20; box-shadow: 0 3px 0 rgba(0,0,0,0.4);
+}
+.crate-btn.hot { animation: pop 1.2s ease-in-out infinite; box-shadow: 0 3px 0 rgba(0,0,0,0.4), 0 0 18px -2px #ff7ad0; }
+.crate-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: 0 3px 0 rgba(0,0,0,0.4); }
+.obj-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.obj { border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.03); padding: 10px; }
+.obj.done { border-color: var(--green); box-shadow: 0 0 14px -4px var(--green); }
+.obj-label { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.obj-bar { height: 7px; border-radius: 4px; background: rgba(0,0,0,0.5); overflow: hidden; margin-bottom: 6px; }
+.obj-bar i { display: block; height: 100%; background: linear-gradient(90deg, #ffd76b, var(--gold)); }
+.obj.done .obj-bar i { background: linear-gradient(90deg, #9dfab0, var(--green)); }
+.obj-foot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); }
+
+/* arena */
+.rank-chip {
+  font-weight: 800; font-size: 13px; color: var(--amber);
+  background: rgba(255,194,51,0.12); border: 1px solid rgba(255,194,51,0.3);
+  border-radius: 999px; padding: 6px 12px;
+}
+.boss-stage {
+  position: relative; min-height: 260px; border-radius: 16px; overflow: hidden;
+  border: 3px solid #000; background-size: cover; background-position: center;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.55); display: flex; align-items: flex-end; margin-bottom: 14px;
+}
+.boss-veil { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(8,6,14,0.15), rgba(8,6,14,0.55) 55%, rgba(8,6,14,0.92)); }
+.boss-body { position: relative; z-index: 2; width: 100%; padding: 18px; }
+.boss-name { font-family: var(--font-head); font-size: 24px; color: #fff; text-shadow: 0 2px 8px #000; margin-bottom: 10px; }
+.boss-hpbar {
+  position: relative; height: 26px; border-radius: 13px; border: 2px solid #000;
+  background: rgba(0,0,0,0.55); overflow: hidden;
+}
+.boss-hpbar i {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #ff3b2f, #ff7a3d); transition: width 0.3s;
+  box-shadow: 0 0 16px rgba(255,80,50,0.6);
+}
+.boss-hpbar b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; font-weight: 800; color: #fff; text-shadow: 0 1px 3px #000; }
+.boss-flash { margin-top: 10px; font-family: var(--font-head); font-size: 18px; color: var(--amber); text-shadow: 0 2px 6px #000; animation: pop 0.5s ease; }
+.arena-controls {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(0,0,0,0.3); padding: 14px; margin-bottom: 12px;
+}
+.squad-power { font-size: 14px; margin-bottom: 8px; }
+.squad-power b { color: #ff8a7a; font-size: 18px; font-family: var(--font-head); }
+.squad-figs { display: flex; gap: 6px; flex-wrap: wrap; }
+.squad-fig { width: 42px; height: 42px; object-fit: cover; border-radius: 9px; border: 2px solid #000; box-shadow: 0 0 0 2px rgba(255,90,72,0.5); }
+.btn.big { font-size: 17px; padding: 16px 26px; }
+
+/* hero modal */
+.hero-modal { width: min(600px, 100%); }
+.hm-top { display: flex; gap: 14px; margin: 6px 0 4px; }
+.hm-portrait {
+  width: 110px; height: 138px; border-radius: 12px; overflow: hidden; flex: none;
+  border: 2px solid var(--rar, var(--gold)); box-shadow: 0 0 18px -4px var(--rar, var(--gold));
+}
+.hm-portrait img { width: 100%; height: 100%; object-fit: cover; }
+.hm-info { flex: 1; min-width: 0; }
+.hm-tier { font-weight: 800; font-size: 14px; }
+.hm-stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; font-size: 13px; color: var(--muted); }
+.hm-might { color: #ff8a7a; font-weight: 800; }
+.hm-status { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.slots { display: flex; flex-direction: column; gap: 8px; }
+.slot-row { display: flex; align-items: center; gap: 12px; }
+.slot {
+  width: 56px; height: 56px; border-radius: 10px; flex: none; cursor: pointer;
+  border: 2px dashed rgba(255,255,255,0.25); background: rgba(0,0,0,0.35);
+  display: grid; place-items: center; overflow: hidden; padding: 0;
+}
+.slot.filled { border: 2px solid var(--rar, var(--gold)); border-style: solid; box-shadow: 0 0 14px -4px var(--rar, var(--gold)); }
+.slot img { width: 100%; height: 100%; object-fit: cover; }
+.slot-ic { font-size: 22px; opacity: 0.7; }
+.slot-info { flex: 1; min-width: 0; }
+.slot-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+.slot-name { font-weight: 700; font-size: 14px; }
+.slot-bonus { font-size: 12px; color: #ff8a7a; }
+.gear-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.gpick {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px; cursor: pointer;
+  border: 2px solid var(--rar, #555); border-radius: 10px; background: rgba(0,0,0,0.4); color: var(--text);
+  box-shadow: 0 0 12px -6px var(--rar);
+}
+.gpick img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid #000; }
+.gp-name { font-size: 12px; font-weight: 700; text-align: center; }
+.gp-bonus { font-size: 11px; color: #ff8a7a; }
+
+/* lunchbox reveal */
+.reveal { width: min(420px, 100%); text-align: center; position: relative; overflow: hidden; }
+.reveal-burst {
+  position: absolute; top: 40%; left: 50%; width: 380px; height: 380px; transform: translate(-50%, -50%);
+  background: radial-gradient(circle, var(--rar) 0%, transparent 62%); opacity: 0.4; z-index: 0;
+  animation: burstspin 6s linear infinite;
+}
+.reveal-card {
+  position: relative; z-index: 1; width: 180px; height: 180px; margin: 6px auto 14px;
+  border-radius: 16px; overflow: hidden; border: 3px solid var(--rar);
+  box-shadow: 0 0 30px -4px var(--rar); animation: revealpop 0.5s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.reveal-img { width: 100%; height: 100%; object-fit: cover; }
+.reveal-title { position: relative; z-index: 1; font-family: var(--font-head); font-size: 22px; }
+.reveal-sub { position: relative; z-index: 1; color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
+.reveal-actions { position: relative; z-index: 1; display: flex; gap: 10px; justify-content: center; }
+@keyframes burstspin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+@keyframes revealpop { 0% { transform: scale(0.3) rotate(-12deg); opacity: 0; } 100% { transform: scale(1) rotate(0); opacity: 1; } }
+
+@media (max-width: 820px) { .arena-controls { flex-direction: column; align-items: stretch; } }
