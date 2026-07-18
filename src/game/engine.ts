@@ -24,6 +24,7 @@ import type {
   GearItem,
   GearSlot,
   IncidentKind,
+  MarketOffer,
   Objective,
   ObjectiveKind,
   Rarity,
@@ -77,6 +78,7 @@ export function createInitialState(now = Date.now()): GameState {
     provisions: 120,
     rooms: [hall, mine, warchest],
     dwellers,
+    market: rollMarket(),
     gear: [],
     lunchboxes: 2, // starter crates to try the gacha
     objectives: defaultObjectives(),
@@ -348,6 +350,59 @@ export function recruitDweller(state: GameState): GameState {
     gold: state.gold - cost,
     dwellers: [...state.dwellers, makeDweller("recruit")],
   };
+}
+
+// ---------- slave market (the surface gate) ----------
+
+export const MARKET_SIZE = 3;
+
+function rollMarketTier(): Tier {
+  const r = Math.random();
+  if (r < 0.44) return "recruit";
+  if (r < 0.72) return "spearman";
+  if (r < 0.9) return "archer";
+  if (r < 0.98) return "cavalry";
+  return "champion";
+}
+
+function slavePrice(tier: Tier): number {
+  return Math.floor(TIERS[tier].recruitCost * (1.3 + Math.random() * 0.6));
+}
+
+function makeOffer(): MarketOffer {
+  const tier = rollMarketTier();
+  return { id: uid("m"), name: randomName(), tier, price: slavePrice(tier) };
+}
+
+export function rollMarket(n = MARKET_SIZE): MarketOffer[] {
+  return Array.from({ length: n }, makeOffer);
+}
+
+export function marketRerollCost(state: GameState): number {
+  return 40 + state.dwellers.length * 15;
+}
+
+export function buySlave(state: GameState, offerId: string): GameState {
+  const offer = state.market.find((o) => o.id === offerId);
+  if (!offer) throw new Error("That gladiator is no longer at market.");
+  if (state.dwellers.length >= maxPopulation(state)) {
+    throw new Error("Great Hall is full — upgrade it to house more legion.");
+  }
+  if (state.gold < offer.price) throw new Error("Not enough gold to buy this gladiator.");
+  const bought = makeDweller(offer.tier);
+  bought.name = offer.name; // keep the gladiator's name from the block
+  return {
+    ...state,
+    gold: state.gold - offer.price,
+    dwellers: [...state.dwellers, bought],
+    market: state.market.map((o) => (o.id === offerId ? makeOffer() : o)),
+  };
+}
+
+export function rerollMarket(state: GameState): GameState {
+  const cost = marketRerollCost(state);
+  if (state.gold < cost) throw new Error("Not enough gold to bring in new stock.");
+  return { ...state, gold: state.gold - cost, market: rollMarket() };
 }
 
 export function buildCost(type: RoomType): number {

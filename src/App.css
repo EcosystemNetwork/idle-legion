@@ -796,3 +796,39 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 @keyframes revealpop { 0% { transform: scale(0.3) rotate(-12deg); opacity: 0; } 100% { transform: scale(1) rotate(0); opacity: 1; } }
 
 @media (max-width: 820px) { .arena-controls { flex-direction: column; align-items: stretch; } }
+
+/* ================= SLAVE MARKET (the gate / ground level) ================= */
+.market {
+  position: relative;
+  padding: 12px 16px;
+  border-bottom: 3px solid #000;
+  background:
+    radial-gradient(80% 120% at 50% -20%, rgba(255, 170, 60, 0.12), transparent),
+    linear-gradient(180deg, #3a2a1a, #221912);
+}
+.market::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 4px;
+  background: repeating-linear-gradient(90deg, #ffc233 0 9px, #14100a 9px 15px);
+  opacity: 0.55;
+}
+.market-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
+.market-title { font-family: var(--font-head); color: #ffd98a; letter-spacing: 1px; font-size: 13px; text-shadow: 0 1px 2px #000; }
+.market-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.stall {
+  display: flex; align-items: center; gap: 10px; padding: 8px;
+  border: 2px solid #000; border-left: 5px solid var(--rar, #ffc233);
+  border-radius: 12px; background: rgba(0, 0, 0, 0.34);
+  box-shadow: 0 0 16px -7px var(--rar);
+}
+.stall-portrait {
+  position: relative; width: 58px; height: 58px; flex: none; border-radius: 10px;
+  overflow: hidden; border: 2px solid var(--rar); box-shadow: 0 0 12px -4px var(--rar);
+}
+.stall-portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.stall-apt { position: absolute; top: 2px; left: 3px; font-size: 13px; filter: drop-shadow(0 1px 1px #000); }
+.stall-might { position: absolute; bottom: 0; right: 0; font-size: 9px; font-weight: 800; background: rgba(0, 0, 0, 0.72); color: #fff; padding: 1px 5px; border-top-left-radius: 7px; }
+.stall-info { flex: 1; min-width: 0; }
+.stall-name { font-family: var(--font-head); font-size: 14px; color: #fff; }
+.stall-tier { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px; }
+.stall-stars { font-size: 11px; }
+.btn.buy { padding: 9px 12px; font-size: 13px; flex: none; }

@@ -26,6 +26,7 @@ import {
   gearDefOf,
   inventoryGear,
   isOnRaid,
+  marketRerollCost,
   objectiveLabel,
   objectiveProgress,
   raidSquadMight,
@@ -346,9 +347,10 @@ function StrongholdView({
     <section className="vault">
       <div className="vault-sky">
         <span className="cloud c1">☁️</span>
-        <span className="sun">🌄 THE SURFACE · drag heroes between rooms</span>
+        <span className="sun">🌄 THE SURFACE</span>
         <span className="cloud c2">☁️</span>
       </div>
+      <SlaveMarket state={state} actions={actions} />
       <div className="vault-body">
         <div className="elevator" aria-hidden>
           {state.rooms.map((r) => (
@@ -376,6 +378,44 @@ function StrongholdView({
         <BuildMenu state={state} actions={actions} />
       </div>
     </section>
+  );
+}
+
+function SlaveMarket({ state, actions }: { state: GameState; actions: Actions }) {
+  const rerollCost = marketRerollCost(state);
+  const full = state.dwellers.length >= maxPopulation(state);
+  return (
+    <div className="market">
+      <div className="market-head">
+        <span className="market-title">⛓️ SLAVE MARKET — buy gladiators at the gate</span>
+        <button type="button" className="chip-btn" disabled={state.gold < rerollCost} onClick={() => actions.rerollMarket()}>
+          🔄 New stock · 🪙 {formatNum(rerollCost)}
+        </button>
+      </div>
+      <div className="market-row">
+        {state.market.map((o) => {
+          const r = RARITY[o.tier];
+          const canBuy = !full && state.gold >= o.price;
+          return (
+            <div key={o.id} className="stall" style={{ ["--rar" as string]: r.color }}>
+              <div className="stall-portrait">
+                <img src={TIER_PORTRAIT[o.tier]} alt={o.name} loading="lazy" />
+                <span className="stall-apt">{APTITUDE_ICON[TIERS[o.tier].aptitude]}</span>
+                <span className="stall-might">{TIERS[o.tier].might} ⚔</span>
+              </div>
+              <div className="stall-info">
+                <div className="stall-name">{o.name}</div>
+                <div className="stall-tier" style={{ color: r.color }}>{TIERS[o.tier].name}</div>
+                <div className="gacha-stars stall-stars" style={{ ["--rar" as string]: r.color }}>{stars(r.stars)}</div>
+              </div>
+              <button type="button" className="btn buy" disabled={!canBuy} onClick={() => actions.buySlave(o.id)}>
+                {full ? "Hall full" : `🪙 ${formatNum(o.price)}`}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

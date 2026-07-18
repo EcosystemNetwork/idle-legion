@@ -11,9 +11,11 @@ import {
   deriveStats,
   equipGear,
   fightBoss,
+  buySlave,
   loadState,
   openLunchbox,
   recruitDweller,
+  rerollMarket,
   rushRoom,
   saveState,
   startRaid,
@@ -89,6 +91,8 @@ export function useGame() {
   const actions = useMemo(
     () => ({
       recruit: () => wrap(recruitDweller),
+      buySlave: (offerId: string) => wrap((s) => buySlave(s, offerId)),
+      rerollMarket: () => wrap(rerollMarket),
       build: (type: RoomType) => wrap((s) => buildRoom(s, type)),
       upgrade: (roomId: string) => wrap((s) => upgradeRoom(s, roomId)),
       assign: (dwellerId: string, roomId: string) =>

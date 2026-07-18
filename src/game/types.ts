@@ -135,11 +135,20 @@ export interface ArenaState {
   lastFightAt: number;
 }
 
+/** A gladiator for sale at the surface slave market. */
+export interface MarketOffer {
+  id: string;
+  name: string;
+  tier: Tier;
+  price: number;
+}
+
 export interface GameState {
   gold: number;
   provisions: number;
   rooms: Room[];
   dwellers: Dweller[];
+  market: MarketOffer[]; // slave-market stock at the gate
   gear: GearItem[]; // all owned gear instances (equipped + inventory)
   lunchboxes: number; // unopened loot crates
   objectives: Objective[];
