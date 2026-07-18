@@ -221,3 +221,42 @@ export function randomName(): string {
   nameCursor++;
   return n;
 }
+
+// ---------- Art (Kekius Maximus Roman-gladiator set) ----------
+// BASE_URL keeps paths correct under the GitHub Pages /idle-legion/ prefix.
+const B = import.meta.env.BASE_URL;
+
+export const IMG = {
+  hero: `${B}art/portrait-champion.jpg`,
+  laurel: `${B}art/emblem-laurel.jpg`,
+  cape: `${B}art/cape.jpg`,
+  controller: `${B}art/controller.jpg`,
+  gold: `${B}art/icon-gold.jpg`,
+  provisions: `${B}art/icon-prov.jpg`,
+  arena: `${B}art/scene-arena.jpg`,
+  chest: `${B}art/room-warchest.jpg`,
+};
+
+export const TIER_PORTRAIT: Record<Tier, string> = {
+  recruit: `${B}art/portrait-recruit.jpg`,
+  spearman: `${B}art/portrait-spearman.jpg`,
+  archer: `${B}art/portrait-archer.jpg`,
+  cavalry: `${B}art/portrait-cavalry.jpg`,
+  champion: `${B}art/portrait-champion.jpg`,
+};
+
+export const ROOM_ART: Record<RoomType, string> = {
+  hall: `${B}art/room-hall.jpg`,
+  mine: `${B}art/room-mine.jpg`,
+  granary: `${B}art/room-granary.jpg`,
+  forge: `${B}art/room-forge.jpg`,
+  warroom: `${B}art/room-warroom.jpg`,
+  warchest: `${B}art/room-warchest.jpg`,
+};
+
+export const RAID_ART: Record<string, string> = {
+  outskirts: `${B}art/raid-outskirts.jpg`,
+  trade_road: `${B}art/raid-trade.jpg`,
+  fort: `${B}art/raid-fort.jpg`,
+  capital: `${B}art/raid-capital.jpg`,
+};

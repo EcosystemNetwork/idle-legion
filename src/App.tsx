@@ -3,10 +3,14 @@ import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
   BUILDABLE,
+  IMG,
   MERCENARY_TIERS,
   RAIDS,
+  RAID_ART,
   ROOMS,
+  ROOM_ART,
   TIERS,
+  TIER_PORTRAIT,
 } from "./game/config";
 import {
   buildCost,
@@ -36,13 +40,12 @@ type Actions = ReturnType<typeof useGame>["actions"];
 type Stats = ReturnType<typeof useGame>["stats"];
 type Wallet = ReturnType<typeof useWallet>;
 
-const RESOURCE_ICON: Record<string, string> = {
-  gold: "🪙",
-  provisions: "🌾",
-  might: "⚔️",
+const RESOURCE_IMG: Record<string, string> = {
+  gold: IMG.gold,
+  provisions: IMG.provisions,
 };
 
-// ---------------- Dweller sprite (little cartoon person) ----------------
+// ---------------- Dweller portrait (real art) ----------------
 
 function DwellerSprite({
   d,
@@ -59,14 +62,11 @@ function DwellerSprite({
     <button
       type="button"
       className={`sprite apt-${d.aptitude} ${resting ? "resting" : ""}`}
-      style={{ animationDelay: `${(d.id.charCodeAt(d.id.length - 1) % 10) * 0.13}s` }}
       title={title ?? `${d.name} · ${TIERS[d.tier].name} · Lv${d.level} · ${APTITUDE_LABEL[d.aptitude]}`}
       onClick={onClick}
     >
+      <img className="pf" src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
       <span className="sp-badge">{TIERS[d.tier].icon}</span>
-      <span className="sp-head" />
-      <span className="sp-body" />
-      <span className="sp-legs" />
       <span className="sp-lvl">{d.level}</span>
     </button>
   );
@@ -105,7 +105,7 @@ export default function App() {
     <div className="app">
       <header className="top">
         <div className="brand">
-          <span className="brand-icon">⚔️</span>
+          <img className="hero-emblem" src={IMG.hero} alt="Champion" />
           <div>
             <h1>Idle Legion</h1>
             <p className="tagline">Build the stronghold · Raise a dynasty · Fund the war on-chain</p>
@@ -375,7 +375,7 @@ function RoomFloor({
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const incident = state.incident?.roomId === room.id ? state.incident : null;
   const upCost = upgradeCost(room);
-  const resIcon = def.produces ? RESOURCE_ICON[def.produces] : null;
+  const resImg = def.produces ? RESOURCE_IMG[def.produces] : null;
 
   // Idle dwellers mill about in the Great Hall.
   const resting =
@@ -386,6 +386,7 @@ function RoomFloor({
   return (
     <div className="floor">
       <div className={`room ${room.type} ${incident ? "on-fire" : ""} ${ready ? "is-ready" : ""}`}>
+        <img className="room-bg" src={ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
         <div className="room-tag">
           <span className="rt-icon">{def.icon}</span>
           <span className="rt-name">{def.name}</span>
@@ -422,9 +423,9 @@ function RoomFloor({
           </div>
         )}
 
-        {ready && resIcon && (
+        {ready && resImg && (
           <button type="button" className="bubble" onClick={() => actions.collect(room.id)}>
-            <span className="b-icon">{resIcon}</span>
+            <img className="b-img" src={resImg} alt="" aria-hidden />
             <span className="b-amt">+{formatNum(stored)}</span>
           </button>
         )}
@@ -539,7 +540,8 @@ function LegionView({ state, actions }: { state: GameState; actions: Actions }) 
           return (
             <article key={d.id} className={`hero-card apt-${d.aptitude}`}>
               <div className="hc-portrait">
-                <DwellerSprite d={d} title={d.name} />
+                <img className="hc-img" src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
+                <span className="hc-badge">{TIERS[d.tier].icon}</span>
               </div>
               <div className="hc-main">
                 <h3>{d.name}</h3>
@@ -634,6 +636,7 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
           const locked = squadMight < m.minMight;
           return (
             <article key={m.id} className={`raid-card ${locked ? "locked" : ""}`}>
+              <img className="raid-bg" src={RAID_ART[m.id]} alt="" aria-hidden loading="lazy" />
               <div className="raid-top">
                 <span className="raid-icon">{m.icon}</span>
                 <div>

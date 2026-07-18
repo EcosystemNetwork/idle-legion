@@ -313,29 +313,45 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 128px;
-  padding: 12px 14px 12px;
+  min-height: 132px;
+  padding: 12px 14px;
   border: 3px solid var(--ink);
+  border-left-width: 6px;
+  border-left-color: var(--accent, var(--gold));
   border-radius: 14px;
   overflow: hidden;
-  background: linear-gradient(180deg, var(--rtop) 0%, var(--rmid) 55%, var(--rbot) 100%);
-  box-shadow:
-    inset 0 3px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -26px 40px rgba(0, 0, 0, 0.28),
-    0 5px 0 rgba(0, 0, 0, 0.35);
+  background: #1a1109;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.4);
 }
-.room.hall { --rtop: #c7a06a; --rmid: #9a7546; --rbot: #6d4f2c; }
-.room.mine { --rtop: #d6ac5c; --rmid: #ab8038; --rbot: #7c5a24; }
-.room.granary { --rtop: #aecb6f; --rmid: #7fa64a; --rbot: #557a30; }
-.room.forge { --rtop: #e69564; --rmid: #bd5f38; --rbot: #8f3f22; }
-.room.warroom { --rtop: #ad93d4; --rmid: #7f5fb0; --rbot: #5b3f8a; }
-.room.warchest { --rtop: #74b4dc; --rmid: #4a8fc0; --rbot: #2f6491; }
+.room > *:not(.room-bg) {
+  position: relative;
+  z-index: 2;
+}
+.room-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.6;
+  z-index: 0;
+}
+.room::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(16, 10, 5, 0.5), rgba(16, 10, 5, 0.84));
+  z-index: 1;
+  pointer-events: none;
+}
+.room.hall { --accent: #c8a86a; }
+.room.mine { --accent: #ffc233; }
+.room.granary { --accent: #7ed07f; }
+.room.forge { --accent: #e0754a; }
+.room.warroom { --accent: #b78be0; }
+.room.warchest { --accent: #6fb0e0; }
 .room.is-ready {
-  box-shadow:
-    inset 0 3px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -26px 40px rgba(0, 0, 0, 0.28),
-    0 5px 0 rgba(0, 0, 0, 0.35),
-    0 0 0 3px rgba(255, 214, 90, 0.55);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.4), 0 0 0 3px rgba(255, 214, 90, 0.5);
 }
 .room.on-fire {
   animation: firelight 0.5s ease-in-out infinite alternate;
@@ -449,8 +465,20 @@ body {
 }
 .bubble:hover { filter: brightness(1.06); }
 .bubble:active { transform: translateY(3px); box-shadow: 0 2px 0 rgba(0, 0, 0, 0.3); }
-.b-icon { font-size: 21px; line-height: 1; }
-.b-amt { font-size: 9px; font-weight: 800; color: #5a3a06; }
+.b-img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+}
+.b-amt {
+  font-size: 10px;
+  font-weight: 800;
+  color: #3a2606;
+  margin-top: 1px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
+}
 
 .room-ctrls {
   display: flex;
@@ -495,68 +523,40 @@ body {
 /* ---------- dweller sprites ---------- */
 .sprite {
   position: relative;
-  width: 34px;
-  height: 52px;
+  width: 46px;
+  height: 46px;
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
   flex: none;
-  animation: bob 2.4s ease-in-out infinite;
 }
-.sprite.resting { cursor: default; opacity: 0.92; }
-.sprite .sp-head {
-  position: absolute;
-  top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #ecc9a0;
+.sprite.resting { cursor: default; }
+.pf {
+  width: 46px;
+  height: 46px;
+  object-fit: cover;
+  border-radius: 10px;
   border: 2px solid var(--ink);
-  z-index: 2;
+  box-shadow: 0 0 0 2px var(--vest, #b98a3c), 0 3px 0 rgba(0, 0, 0, 0.45);
+  display: block;
 }
-.sprite .sp-body {
-  position: absolute;
-  top: 19px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 26px;
-  height: 22px;
-  border-radius: 11px 11px 7px 7px;
-  background: var(--vest, #b98a3c);
-  border: 2px solid var(--ink);
-  z-index: 1;
-  box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.25);
-}
-.sprite .sp-legs {
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 22px;
-  height: 11px;
-  background: #47331d;
-  background: #47331d;
-  background: #47331d;
-  background: #47331d;
-  border: 2px solid var(--ink);
-  border-radius: 0 0 6px 6px;
-}
+.apt-labor { --vest: #e0a13c; }
+.apt-hunt { --vest: #69b04a; }
+.apt-war { --vest: #d1503f; }
+.sprite:hover .pf { filter: brightness(1.12); }
 .sprite .sp-badge {
   position: absolute;
-  top: -9px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: -8px;
+  left: -6px;
   font-size: 13px;
   z-index: 3;
-  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.5));
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.7));
 }
 .sprite .sp-lvl {
   position: absolute;
-  bottom: -4px;
-  right: -7px;
+  bottom: -6px;
+  right: -6px;
   font-size: 9px;
   font-weight: 800;
   color: #2a1c06;
@@ -566,27 +566,31 @@ body {
   padding: 0 3px;
   z-index: 4;
 }
-.apt-labor { --vest: #e0a13c; }
-.apt-hunt { --vest: #69b04a; }
-.apt-war { --vest: #d1503f; }
-.sprite:hover .sp-body { filter: brightness(1.12); }
 .sprite.ghost {
-  width: 34px;
-  height: 52px;
-  border: 2px dashed rgba(255, 255, 255, 0.45);
+  width: 46px;
+  height: 46px;
+  border: 2px dashed rgba(255, 255, 255, 0.4);
   border-radius: 10px;
-  background: rgba(0, 0, 0, 0.18);
+  background: rgba(0, 0, 0, 0.25);
   color: rgba(255, 255, 255, 0.7);
   display: grid;
   place-items: center;
-  animation: none;
-  align-self: flex-end;
 }
 .sprite.ghost:hover {
-  border-color: #ffe9a3;
-  color: #ffe9a3;
+  border-color: var(--gold);
+  color: var(--gold);
 }
-.sp-plus { font-size: 18px; font-weight: 800; }
+.sp-plus { font-size: 20px; font-weight: 800; }
+
+/* header hero emblem */
+.hero-emblem {
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 16px rgba(255, 194, 51, 0.4), 0 4px 0 rgba(0, 0, 0, 0.4);
+}
 
 /* ---------- build menu ---------- */
 .bedrock {
@@ -714,14 +718,28 @@ body {
 .hero-card.apt-hunt { border-left-color: #69b04a; }
 .hero-card.apt-war { border-left-color: #d1503f; }
 .hc-portrait {
-  width: 56px;
-  display: grid;
-  place-items: end center;
-  background: radial-gradient(circle at 50% 30%, rgba(255, 220, 140, 0.16), rgba(0, 0, 0, 0.25));
-  border: 2px solid var(--ink);
-  border-radius: 10px;
-  padding-bottom: 6px;
+  position: relative;
+  width: 72px;
   flex: none;
+}
+.hc-img {
+  width: 72px;
+  height: 88px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 2px solid var(--ink);
+  box-shadow: 0 0 0 2px var(--accent, var(--gold)), 0 3px 0 rgba(0, 0, 0, 0.4);
+  display: block;
+}
+.hero-card.apt-labor .hc-portrait { --accent: #e0a13c; }
+.hero-card.apt-hunt .hc-portrait { --accent: #69b04a; }
+.hero-card.apt-war .hc-portrait { --accent: #d1503f; }
+.hc-badge {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  font-size: 16px;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.7));
 }
 .hc-main {
   flex: 1;
@@ -802,6 +820,8 @@ body {
   gap: 12px;
 }
 .raid-card {
+  position: relative;
+  overflow: hidden;
   border: 3px solid var(--ink);
   border-radius: 14px;
   padding: 14px;
@@ -810,6 +830,23 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.raid-card > *:not(.raid-bg) { position: relative; z-index: 2; }
+.raid-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.42;
+  z-index: 0;
+}
+.raid-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(26, 17, 9, 0.35), rgba(26, 17, 9, 0.82));
+  z-index: 1;
 }
 .raid-card.locked { opacity: 0.55; }
 .raid-top {

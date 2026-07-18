@@ -25,3 +25,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Raw AI asset dump — curated + optimized copies live in public/art/
+public/grok-*.jpg
+public/Lit.jpg
