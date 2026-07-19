@@ -11,8 +11,11 @@ import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
   BUILDABLE,
+  CLASS_ICON,
+  CLASS_LABEL,
   CRATE_IMG,
   DESCEND_MIN_GOLD,
+  GEAR_MAX_LEVEL,
   IMG,
   KEKIUS_MODEL,
   KIT,
@@ -38,18 +41,31 @@ import {
   type AssetType,
 } from "./game/assets";
 import {
+  arenaClassEdge,
   arenaSquad,
   arenaSquadPower,
   buildCost,
   canDescend,
+  classMultiplierVs,
   currentBoss,
+  dailyAvailable,
+  dailyReward,
   dwellerById,
+  dwellerClass,
+  dwellerMaxHp,
   dwellerMight,
   equippedGearDefs,
   formatNum,
+  fusionCandidates,
+  gearAtMaxLevel,
   gearDefOf,
+  gearItemStats,
+  gearLevel,
   gearSellValue,
+  gearUpgradeCost,
+  healSalveCost,
   heroSellValue,
+  hpFrac,
   idleDwellers,
   inventoryGear,
   isOnRaid,
@@ -64,14 +80,17 @@ import {
   roomRate,
   roomStoreCap,
   maxPopulation,
+  squadClassEdge,
   squadPower,
+  staminaFrac,
   upgradeCost,
+  warChestStoreCap,
   xpProgress,
   type Pull,
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { Dweller, GameState, GearSlot, LevelUpEvent, OfflineSummary, OnchainListing, Room, Tier } from "./game/types";
+import type { CombatClass, Dweller, GameState, GearItem, GearSlot, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
@@ -89,7 +108,11 @@ type Actions = Game["actions"];
 type Stats = Game["stats"];
 type Wallet = ReturnType<typeof useWallet>;
 
-const RESOURCE_IMG: Record<string, string> = { gold: IMG.gold, provisions: IMG.provisions };
+const RESOURCE_IMG: Record<string, string> = {
+  gold: IMG.gold,
+  provisions: IMG.provisions,
+  salves: KIT.res.crystal,
+};
 const SLOT_ICON: Record<GearSlot, string> = { weapon: "⚔️", armor: "🛡️", mount: "🐎" };
 const SLOT_LABEL: Record<GearSlot, string> = { weapon: "Weapon", armor: "Armor", mount: "Mount" };
 const RARITY: Record<Tier, { name: string; color: string; stars: number }> = {
@@ -101,6 +124,33 @@ const RARITY: Record<Tier, { name: string; color: string; stars: number }> = {
 };
 function stars(n: number) {
   return "★".repeat(n) + "☆".repeat(5 - n);
+}
+
+// A thin red health bar. `downed` heroes read as a dark, empty bar.
+function HpBar({ d }: { d: Dweller }) {
+  const frac = hpFrac(d);
+  const max = dwellerMaxHp(d);
+  return (
+    <div className={`vital hp ${d.downed ? "downed" : frac < 0.34 ? "low" : ""}`} title={`${Math.ceil(d.hp)} / ${max} HP`}>
+      <i style={{ width: `${frac * 100}%` }} />
+    </div>
+  );
+}
+
+// The rock-paper-scissors class chip (melee ▶ ranged ▶ charge).
+function ClassBadge({ cls, small }: { cls: CombatClass; small?: boolean }) {
+  return (
+    <span className={`class-badge cls-${cls} ${small ? "sm" : ""}`} title={`${CLASS_LABEL[cls]} class`}>
+      {CLASS_ICON[cls]}{small ? "" : ` ${CLASS_LABEL[cls]}`}
+    </span>
+  );
+}
+
+/** A ▲/▼/= verdict on a squad's class multiplier vs. an enemy class. */
+function classEdgeVerdict(edge: number): { txt: string; cls: string } {
+  if (edge >= 1.12) return { txt: `▲ ${Math.round((edge - 1) * 100)}% class edge`, cls: "adv" };
+  if (edge <= 0.9) return { txt: `▼ ${Math.round((1 - edge) * 100)}% class penalty`, cls: "dis" };
+  return { txt: "= even matchup", cls: "even" };
 }
 
 // A slim XP bar with the fraction-to-next-level. `milestone` glows gold when the
@@ -122,19 +172,22 @@ function XpBar({ d, showText = false }: { d: Dweller; showText?: boolean }) {
 function Figure({ d, onClick }: { d: Dweller; onClick?: () => void }) {
   const delay = (d.id.charCodeAt(d.id.length - 1) % 10) * 0.15;
   const geared = d.equipped.weapon || d.equipped.armor || d.equipped.mount;
+  const hurt = d.downed || d.hp < dwellerMaxHp(d);
   return (
     <button
       type="button"
-      className={`fig apt-${d.aptitude}`}
-      draggable
+      className={`fig apt-${d.aptitude} ${d.downed ? "is-downed" : ""}`}
+      draggable={!d.downed}
       onDragStart={(e) => e.dataTransfer.setData("text/plain", d.id)}
       style={{ animationDelay: `${delay}s` }}
-      title={`${d.name} · ${TIERS[d.tier].name} · Lv${d.level} · drag to assign`}
+      title={`${d.name} · ${TIERS[d.tier].name} · Lv${d.level}${d.downed ? " · DOWNED — heal me" : ""}`}
       onClick={onClick}
     >
       <img className="fig-img" src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
       <span className="fig-lvl">{d.level}</span>
       {geared && <span className="fig-gear">⚔</span>}
+      {d.downed && <span className="fig-down" aria-hidden>✚</span>}
+      {hurt && <span className="fig-vitals" aria-hidden><HpBar d={d} /></span>}
       <span className="fig-shadow" aria-hidden />
     </button>
   );
@@ -252,7 +305,9 @@ export default function App() {
         </div>
       </header>
 
-      <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} onOpenBox={openBox} />
+      <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} onOpenBox={openBox} onHealAll={actions.healAll} />
+
+      <DailyBanner state={state} now={now} onClaim={actions.claimDaily} />
 
       {state.incident && (
         <div className="banner incident" role="alert">
@@ -364,6 +419,10 @@ export default function App() {
         <OfflineModal summary={state.offlineSummary} onClose={() => actions.clearOffline()} />
       )}
 
+      {state.raidReport && (
+        <RaidReportModal report={state.raidReport} onClose={() => actions.clearRaidReport()} />
+      )}
+
       <LevelUpLayer events={state.levelUps} onDrain={() => actions.clearLevelUps()} />
 
       <footer className="foot">
@@ -404,14 +463,17 @@ function ResourceBar({
   wallet,
   onCollectAll,
   onOpenBox,
+  onHealAll,
 }: {
   state: GameState;
   stats: Stats;
   wallet: Wallet;
   onCollectAll: () => void;
   onOpenBox: () => void;
+  onHealAll: () => void;
 }) {
-  const anyReady = state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1);
+  const anyReady =
+    state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1) || state.warChest.stored >= 1;
   const goldShown = useCountUp(state.gold);
   return (
     <section className="resources">
@@ -422,8 +484,23 @@ function ResourceBar({
         v={formatNum(state.provisions)}
         s={`${stats.provisionsPerSec >= 0 ? "+" : ""}${stats.provisionsPerSec.toFixed(2)}/s${stats.fed ? "" : " · STARVING"}`}
       />
+      <Chip
+        cls={`salves ${stats.woundedCount > 0 && state.salves <= 0 ? "warn" : ""}`}
+        img={KIT.res.crystal}
+        v={formatNum(state.salves)}
+        s={`⛑ ${stats.salvesPerSec >= 0 ? "+" : ""}${stats.salvesPerSec.toFixed(2)}/s`}
+      />
       <Chip cls="pop" icon="🛡️" v={`${stats.population}/${maxPopulation(state)}`} s={`${stats.idleCount} idle`} />
       <Chip cls="might" icon="⚔️" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
+      {stats.woundedCount > 0 && (
+        <button className="chip-stat wounded hot" onClick={onHealAll} title="Heal all wounded with salves">
+          <span className="ci">⛑️</span>
+          <span className="cv">
+            <b>{stats.woundedCount}</b>
+            <small>heal all</small>
+          </span>
+        </button>
+      )}
       {state.renown > 0 && (
         <Chip cls="renown" icon="🏅" v={`${state.renown}`} s={`+${Math.round(renownBoost(state) * 100)}% output`} />
       )}
@@ -589,18 +666,26 @@ function DescendPanel({ state, actions }: { state: GameState; actions: Actions }
 
 // ---------------- shared squad picker (Fix #4) ----------------
 
-function SquadPicker({ state, actions }: { state: GameState; actions: Actions }) {
+function SquadPicker({ state, actions, enemyClass }: { state: GameState; actions: Actions; enemyClass?: CombatClass }) {
   const idle = idleDwellers(state);
   const chosen = new Set(state.squad);
   const picked = idle.filter((d) => chosen.has(d.id));
   const sending = picked.length ? picked : idle;
   const power = Math.floor(squadPower(state, sending));
+  const edge = enemyClass ? squadClassEdge(state, sending, enemyClass) : null;
+  const verdict = edge != null ? classEdgeVerdict(edge) : null;
   return (
     <div className="squad-picker">
       <div className="sp-head">
         <span>
           🎖️ Squad — sending <b>{sending.length}</b> · <b>{power} ⚔</b>
           {picked.length === 0 && idle.length > 0 ? <span className="muted small"> (all idle)</span> : null}
+          {enemyClass && (
+            <span className="sp-enemy">
+              {" "}vs {CLASS_ICON[enemyClass]} {CLASS_LABEL[enemyClass]}
+              {verdict && <b className={`edge-tag ${verdict.cls}`}> {verdict.txt}</b>}
+            </span>
+          )}
         </span>
         <div className="sp-actions">
           <button type="button" className="chip-btn" disabled={idle.length === 0} onClick={() => actions.selectAllIdle()}>
@@ -612,20 +697,24 @@ function SquadPicker({ state, actions }: { state: GameState; actions: Actions })
         </div>
       </div>
       <div className="sp-row">
-        {idle.length === 0 && <span className="muted small">No idle dwellers — recall some from rooms or a raid.</span>}
+        {idle.length === 0 && <span className="muted small">No rested dwellers — recall some from rooms, heal the downed, or let them rest.</span>}
         {idle.map((d) => {
           const on = chosen.has(d.id);
+          const cls = dwellerClass(d);
+          const counters = enemyClass ? classMultiplierVs(cls, enemyClass) : 1;
           return (
             <button
               key={d.id}
               type="button"
-              className={`sp-fig apt-${d.aptitude} ${on ? "on" : ""}`}
+              className={`sp-fig apt-${d.aptitude} ${on ? "on" : ""} ${counters > 1 ? "counters" : counters < 1 ? "countered" : ""}`}
               style={{ ["--rar" as string]: RARITY[d.tier].color }}
-              title={`${d.name} · ${TIERS[d.tier].name} · ${Math.floor(dwellerMight(d, state))}⚔`}
+              title={`${d.name} · ${TIERS[d.tier].name} · ${CLASS_LABEL[cls]} · ${Math.floor(dwellerMight(d, state))}⚔ · ${Math.round(d.stamina)} stamina`}
               onClick={() => actions.toggleSquad(d.id)}
             >
               <img src={TIER_PORTRAIT[d.tier]} alt={d.name} loading="lazy" />
+              <span className="sp-cls">{CLASS_ICON[cls]}</span>
               <span className="sp-m">{Math.floor(dwellerMight(d, state))}</span>
+              <span className="sp-sta"><i style={{ width: `${staminaFrac(d) * 100}%` }} /></span>
               {on && <span className="sp-check">✓</span>}
             </button>
           );
@@ -657,11 +746,75 @@ function OfflineModal({ summary, onClose }: { summary: OfflineSummary; onClose: 
               {summary.provisions >= 0 ? "+" : "−"}{formatNum(Math.abs(summary.provisions))}
             </b>
           </div>
+          {summary.salves > 0 && (
+            <div className="offline-row"><span>⛑️ Salves stocked</span><b>+{formatNum(summary.salves)}</b></div>
+          )}
           {summary.recruits > 0 && (
             <div className="offline-row"><span>🪖 Recruits raised</span><b>+{summary.recruits}</b></div>
           )}
         </div>
         <button type="button" className="btn" onClick={onClose}>Back to the deep</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- daily-login reward ----------------
+
+function DailyBanner({ state, now, onClaim }: { state: GameState; now: number; onClaim: () => void }) {
+  if (!dailyAvailable(state, now)) return null;
+  const r = dailyReward(state, now);
+  return (
+    <div className="banner daily" role="status">
+      <span className="daily-icon">🎁</span>
+      <strong>Daily tribute ready</strong>
+      <span className="muted small">
+        Day {r.streak} streak · 🪙 {formatNum(r.gold)}{r.lunchboxes > 0 ? " + 🎁 lunchbox" : ""}
+      </span>
+      <button type="button" className="btn" onClick={onClaim}>Claim</button>
+    </div>
+  );
+}
+
+// ---------------- raid after-action report (exploration log) ----------------
+
+function RaidReportModal({ report, onClose }: { report: RaidReport; onClose: () => void }) {
+  const verdict = classEdgeVerdict(report.classEdge);
+  const toneIcon: Record<string, string> = { loot: "🪙", fight: "⚔️", wound: "🩸", flavor: "·" };
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal raid-report" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>🗺️ {report.missionName} — After-Action</h3>
+          <button className="chip-btn" onClick={onClose}>✕</button>
+        </div>
+        <div className="rr-summary">
+          <div className="rr-stat"><b>🪙 {formatNum(report.gold)}</b><span>looted</span></div>
+          <div className="rr-stat"><b>+{report.xp} XP</b><span>each</span></div>
+          <div className={`rr-stat edge ${verdict.cls}`}><b>{verdict.txt}</b><span>matchup</span></div>
+        </div>
+        {(report.wounded.length > 0 || report.downed.length > 0 || report.killed.length > 0) && (
+          <div className="rr-casualties">
+            {report.wounded.length > 0 && <span className="cas wound">🩸 {report.wounded.length} wounded</span>}
+            {report.downed.length > 0 && <span className="cas down">🚑 {report.downed.length} downed</span>}
+            {report.killed.length > 0 && <span className="cas dead">💀 {report.killed.join(", ")} lost</span>}
+          </div>
+        )}
+        <div className="rr-log">
+          {report.log.map((e, i) => {
+            const mm = Math.floor(e.t / 60);
+            const ss = e.t % 60;
+            const stamp = mm > 0 ? `${mm}m${ss.toString().padStart(2, "0")}s` : `${ss}s`;
+            return (
+              <div key={i} className={`rr-line ${e.tone}`}>
+                <span className="rr-time">{stamp}</span>
+                <span className="rr-ic">{e.icon || toneIcon[e.tone]}</span>
+                <span className="rr-txt">{e.text}</span>
+              </div>
+            );
+          })}
+        </div>
+        <button type="button" className="btn" onClick={onClose}>Home to the deep</button>
       </div>
     </div>
   );
@@ -790,12 +943,15 @@ function Chamber({
 }) {
   const [over, setOver] = useState(false);
   const def = ROOMS[room.type];
+  const isVault = room.type === "warchest";
   const cap = roomCapacity(room);
-  const storeCap = roomStoreCap(room);
+  // The Treasury Vault yields from staked USD into its own pool (state.warChest).
+  const storeCap = isVault ? warChestStoreCap(state) : roomStoreCap(room);
+  const storedRaw = isVault ? state.warChest.stored : room.stored;
   const rate = roomRate(state, room, stats.fed);
-  const stored = Math.floor(room.stored);
+  const stored = Math.floor(storedRaw);
   const ready = storeCap > 0 && stored >= 1;
-  const fill = storeCap > 0 ? Math.min(1, room.stored / storeCap) : 0;
+  const fill = storeCap > 0 ? Math.min(1, storedRaw / storeCap) : 0;
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const incident = state.incident?.roomId === room.id ? state.incident : null;
   const upCost = upgradeCost(room);
@@ -910,7 +1066,7 @@ function Chamber({
           <span className="ch-note">{def.description}</span>
         )}
         <div className="ch-ctrls">
-          {def.produces && (
+          {def.produces && !isVault && (
             <button type="button" className="chip-btn" title="Rush — risks an incident" onClick={() => actions.rush(room.id)}>
               ⚡
             </button>
@@ -1003,10 +1159,11 @@ function LegionView({
           const out = isOnRaid(state, d.id);
           const r = RARITY[d.tier];
           const geared = equippedGearDefs(state, d).length;
+          const hurt = d.downed || d.hp < dwellerMaxHp(d);
           return (
             <button
               key={d.id}
-              className={`gacha apt-${d.aptitude}`}
+              className={`gacha apt-${d.aptitude} ${d.downed ? "is-downed" : ""}`}
               style={{ ["--rar" as string]: r.color }}
               onClick={() => onHero(d.id)}
             >
@@ -1018,14 +1175,19 @@ function LegionView({
                 <div className="gacha-portrait">
                   <img src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
                   <span className="gacha-apt">{APTITUDE_ICON[d.aptitude]}</span>
+                  <span className="gacha-cls" title={CLASS_LABEL[dwellerClass(d)]}>{CLASS_ICON[dwellerClass(d)]}</span>
                   <span className="gacha-might">{Math.floor(dwellerMight(d, state))} ⚔</span>
                   {geared > 0 && <span className="gacha-gear">{geared}⚙</span>}
+                  {d.onchain && <span className="gacha-chain" title="On-chain — survives Descend">🔗</span>}
                 </div>
                 <div className="gacha-name">{d.name}</div>
                 <div className="gacha-stars">{stars(r.stars)}</div>
                 <XpBar d={d} />
+                {hurt && <HpBar d={d} />}
                 <div className="gacha-foot">
-                  {out ? (
+                  {d.downed ? (
+                    <span className="badge downed-badge">🚑 Downed · tap to heal</span>
+                  ) : out ? (
                     <span className="badge raid">On raid</span>
                   ) : room ? (
                     <span className="badge">{ROOMS[room.type].icon} {ROOMS[room.type].name}</span>
@@ -1086,7 +1248,8 @@ function ArenaView({ game }: { game: Game }) {
   const boss = currentBoss(state);
   const squad = arenaSquad(state);
   const power = Math.floor(arenaSquadPower(state));
-  const hpFrac = Math.max(0, state.arena.bossHp) / bossMaxHp(state);
+  const edgeVerdict = classEdgeVerdict(arenaClassEdge(state));
+  const bossHpFrac = Math.max(0, state.arena.bossHp) / bossMaxHp(state);
   const cd = Math.max(0, 6000 - (now - state.arena.lastFightAt));
   const onFight = () => {
     const res = fightBoss();
@@ -1107,7 +1270,7 @@ function ArenaView({ game }: { game: Game }) {
       sfx.legendary();
     } else {
       const crit = res.damage >= power; // a strong roll
-      setFlash(`Hit for ${formatNum(res.damage)}!`);
+      setFlash(`Hit for ${formatNum(res.damage)}!${res.downed.length ? ` 🚑 ${res.downed.join(", ")} down!` : ""}`);
       setHitToken((h) => h + 1);
       shake(crit ? 9 : 4);
       burst(c.x, c.y - 10, { color: crit ? "#ffd76b" : "#ff8a7a", count: crit ? 18 : 10, kind: "spark", power: crit ? 6 : 4 });
@@ -1135,26 +1298,28 @@ function ArenaView({ game }: { game: Game }) {
         <div className="boss-body">
           <div className="boss-name">{boss.name}</div>
           <div className="boss-hpbar">
-            <i style={{ width: `${hpFrac * 100}%` }} />
+            <i style={{ width: `${bossHpFrac * 100}%` }} />
             <b>{formatNum(Math.max(0, state.arena.bossHp))} HP</b>
           </div>
           {flash && <div className="boss-flash">{flash}</div>}
         </div>
       </div>
 
-      <SquadPicker state={state} actions={actions} />
+      <SquadPicker state={state} actions={actions} enemyClass={boss.enemyClass} />
 
       <div className="arena-controls">
         <div className="squad-info">
-          <div className="squad-power">Squad power <b>{power} ⚔</b></div>
-          <span className="muted small">Forge arsenal counts toward every fight.</span>
+          <div className="squad-power">Squad power <b>{power} ⚔</b> · <b className={`edge-tag ${edgeVerdict.cls}`}>{edgeVerdict.txt}</b></div>
+          <span className="muted small">
+            Boss is {CLASS_ICON[boss.enemyClass]} {CLASS_LABEL[boss.enemyClass]} — counter it ({CLASS_ICON[boss.enemyClass === "melee" ? "charge" : boss.enemyClass === "ranged" ? "melee" : "ranged"]} beats it). Forge arsenal counts too; the boss bites back.
+          </span>
         </div>
         <button type="button" className="btn big" disabled={cd > 0 || squad.length === 0} onClick={onFight}>
           {cd > 0 ? `Regrouping ${Math.ceil(cd / 1000)}s` : "⚔ FIGHT"}
         </button>
       </div>
       <p className="muted small">
-        Pick a squad from your idle heroes (or send all). Beat the boss for gold + a 🎁 lunchbox and climb the ladder. Equip gear in the Legion tab to hit harder.
+        Pick a squad from your idle heroes (or send all). Class matchup swings damage; a downed hero must be healed with salves before they can fight again. Beat the boss for gold + a 🎁 lunchbox.
       </p>
     </section>
   );
@@ -1223,6 +1388,8 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
                   <span>⏱ {m.durationSec}s</span>
                   <span className={locked ? "req warn" : "req"}>⚔ ≥{m.minMight}</span>
                   <span>🪙 +{formatNum(m.goldReward)}</span>
+                  <span className="req" title={`Enemy class: ${CLASS_LABEL[m.enemyClass]} — counter it for bonus loot`}>{CLASS_ICON[m.enemyClass]} {CLASS_LABEL[m.enemyClass]}</span>
+                  <span className="req danger" title={`Wound risk`}>{"🩸".repeat(m.danger > 0.5 ? 3 : m.danger > 0.25 ? 2 : 1)}</span>
                 </div>
                 <button type="button" className="btn" disabled={locked || Boolean(raid) || !hasWarRoom} onClick={() => actions.startRaid(m.id)}>
                   {locked ? "Need more might" : raid ? "Raid in progress" : "⚔ March to battle"}
@@ -1244,13 +1411,16 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
   const room = d.roomId ? state.rooms.find((x) => x.id === d.roomId) : null;
   const out = isOnRaid(state, d.id);
   const might = Math.floor(dwellerMight(d, state));
+  const cls = dwellerClass(d);
+  const maxHp = dwellerMaxHp(d);
+  const hurt = d.downed || d.hp < maxHp;
+  const healCost = healSalveCost(d);
   const inv = inventoryGear(state).filter((g) => (pickSlot ? gearDefOf(g).slot === pickSlot : true));
 
-  const equippedItem = (slot: GearSlot) => {
+  const equippedItemInstance = (slot: GearSlot): GearItem | null => {
     const id = d.equipped[slot];
     if (!id) return null;
-    const item = state.gear.find((g) => g.id === id);
-    return item ? gearDefOf(item) : null;
+    return state.gear.find((g) => g.id === id) ?? null;
   };
 
   return (
@@ -1273,10 +1443,14 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
             <div className="hm-stats">
               <span>Lv {d.level}</span>
               <span>{APTITUDE_ICON[d.aptitude]} {APTITUDE_LABEL[d.aptitude]}</span>
+              <ClassBadge cls={cls} />
               <span className="hm-might">{might} ⚔ might</span>
+              {d.onchain && <span className="badge onchain-badge" title="Bought on-chain — survives a Descend">🔗 on-chain</span>}
             </div>
             <div className="hm-status">
-              {out ? (
+              {d.downed ? (
+                <span className="badge downed-badge">🚑 Downed</span>
+              ) : out ? (
                 <span className="badge raid">On raid</span>
               ) : room ? (
                 <>
@@ -1290,6 +1464,30 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
           </div>
         </div>
 
+        <div className="hm-vitals">
+          <div className="hm-vrow">
+            <span className="hm-vlabel">❤️ Health</span>
+            <div className="vital hp big"><i style={{ width: `${hpFrac(d) * 100}%` }} /></div>
+            <span className="hm-vnum">{Math.ceil(d.hp)}/{maxHp}</span>
+          </div>
+          <div className="hm-vrow">
+            <span className="hm-vlabel">⚡ Stamina</span>
+            <div className="vital sta big"><i style={{ width: `${staminaFrac(d) * 100}%` }} /></div>
+            <span className="hm-vnum">{Math.round(d.stamina)}/100</span>
+          </div>
+          {hurt && (
+            <button
+              type="button"
+              className="btn heal-btn"
+              disabled={state.salves < healCost}
+              onClick={() => actions.heal(d.id)}
+              title={`Spend ${healCost} salves`}
+            >
+              {d.downed ? "🚑 Revive" : "⛑️ Heal"} · {healCost} salves{state.salves < healCost ? " (short)" : ""}
+            </button>
+          )}
+        </div>
+
         <div className="hm-xp">
           <div className="hm-xp-head">
             <span>Lv {d.level} → {d.level + 1}{(d.level + 1) % MILESTONE_EVERY === 0 ? " · ★ milestone 🎁" : ""}</span>
@@ -1301,10 +1499,16 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
           </div>
         </div>
 
-        <h4 className="ml">Equipment</h4>
+        <h4 className="ml">Equipment · forge higher, fuse duplicates</h4>
         <div className="slots">
           {(["weapon", "armor", "mount"] as GearSlot[]).map((slot) => {
-            const g = equippedItem(slot);
+            const item = equippedItemInstance(slot);
+            const g = item ? gearDefOf(item) : null;
+            const lvl = item ? gearLevel(item) : 0;
+            const scaled = item ? gearItemStats(item) : null;
+            const upCost = item ? gearUpgradeCost(item) : 0;
+            const maxed = item ? gearAtMaxLevel(item) : false;
+            const fuseC = item ? fusionCandidates(state, item.id) : [];
             return (
               <div key={slot} className="slot-row">
                 <button
@@ -1313,19 +1517,46 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
                   onClick={() => setPickSlot(pickSlot === slot ? null : slot)}
                 >
                   {g ? <img src={g.img} alt={g.name} /> : <span className="slot-ic">{SLOT_ICON[slot]}</span>}
+                  {lvl > 0 && <span className="slot-lv">+{lvl}</span>}
                 </button>
                 <div className="slot-info">
                   <div className="slot-label">{SLOT_LABEL[slot]}</div>
-                  {g ? (
+                  {g && item && scaled ? (
                     <>
-                      <div className="slot-name" style={{ color: RARITY_META[g.rarity].color }}>{g.name}</div>
-                      <div className="slot-bonus">+{g.might}⚔ {g.output ? `· +${g.output}/s` : ""}</div>
+                      <div className="slot-name" style={{ color: RARITY_META[g.rarity].color }}>
+                        {g.name}{lvl > 0 ? ` +${lvl}` : ""}
+                      </div>
+                      <div className="slot-bonus">
+                        +{Math.round(scaled.might)}⚔ {scaled.output ? `· +${scaled.output.toFixed(1)}/s` : ""}
+                        <span className="muted small"> · {lvl}/{GEAR_MAX_LEVEL}</span>
+                      </div>
+                      <div className="slot-forge">
+                        <button
+                          type="button"
+                          className="chip-btn forge"
+                          disabled={maxed || state.gold < upCost}
+                          title={maxed ? "Max forge level" : `Forge to +${lvl + 1}`}
+                          onClick={() => actions.upgradeGear(item.id)}
+                        >
+                          {maxed ? "MAX" : `▲ Forge · 🪙 ${formatNum(upCost)}`}
+                        </button>
+                        {fuseC.length > 0 && !maxed && (
+                          <button
+                            type="button"
+                            className="chip-btn fuse"
+                            title={`Fuse a duplicate (+2 levels) — ${fuseC.length} in armory`}
+                            onClick={() => actions.fuseGear(item.id, fuseC[0].id)}
+                          >
+                            ⊕ Fuse ×{fuseC.length}
+                          </button>
+                        )}
+                      </div>
                     </>
                   ) : (
                     <div className="muted small">empty — tap to equip</div>
                   )}
                 </div>
-                {g && (
+                {item && (
                   <button className="chip-btn" onClick={() => actions.unequip(d.id, slot)}>Unequip</button>
                 )}
               </div>
@@ -1340,6 +1571,8 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
               {inv.length === 0 && <p className="muted small">No {SLOT_LABEL[pickSlot].toLowerCase()} in the armory. Open lunchboxes to find gear.</p>}
               {inv.map((item) => {
                 const g = gearDefOf(item);
+                const lvl = gearLevel(item);
+                const scaled = gearItemStats(item);
                 return (
                   <button
                     key={item.id}
@@ -1351,8 +1584,9 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
                     }}
                   >
                     <img src={g.img} alt={g.name} />
+                    {lvl > 0 && <span className="gp-lv">+{lvl}</span>}
                     <span className="gp-name" style={{ color: RARITY_META[g.rarity].color }}>{g.name}</span>
-                    <span className="gp-bonus">+{g.might}⚔{g.output ? ` +${g.output}/s` : ""}</span>
+                    <span className="gp-bonus">+{Math.round(scaled.might)}⚔{scaled.output ? ` +${scaled.output.toFixed(1)}/s` : ""}</span>
                   </button>
                 );
               })}

@@ -1,7 +1,7 @@
 // Admin / debug panel — "see everything" overlay.
 // Read-only inspection of the full game + wallet state, plus dev cheat controls.
 // Toggle with the 🛠 button (bottom-left) or the ` (backtick) key.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BOSSES,
   GEAR_CATALOG,
@@ -24,6 +24,14 @@ import {
 import type { useGame } from "../hooks/useGame";
 import type { useWallet } from "../hooks/useWallet";
 import type { GameState, Tier } from "../game/types";
+import {
+  currentSessionId,
+  fetchAdminAnalytics,
+  fetchSessionDetail,
+  type AdminAnalytics,
+  type PlayerSession,
+  type SessionDetail,
+} from "../lib/telemetry";
 
 type Game = ReturnType<typeof useGame>;
 type Wallet = ReturnType<typeof useWallet>;
@@ -101,6 +109,131 @@ function NumField({
   );
 }
 
+const ADMIN_TOKEN_KEY = "idle-legion-admin-token";
+const rel = (iso: string) => {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+};
+
+// Cross-user telemetry dashboard — reads the InsForge backend (all players'
+// clicks, emails, and IP-derived locations). Gated by the admin token.
+function TelemetrySection() {
+  const [token, setToken] = useState<string>(() => {
+    try { return localStorage.getItem(ADMIN_TOKEN_KEY) ?? ""; } catch { return ""; }
+  });
+  const [data, setData] = useState<AdminAnalytics | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [auto, setAuto] = useState(false);
+
+  const load = async () => {
+    if (!token) { setErr("Enter the admin token"); return; }
+    setLoading(true);
+    setErr(null);
+    try {
+      try { localStorage.setItem(ADMIN_TOKEN_KEY, token); } catch { /* ignore */ }
+      setData(await fetchAdminAnalytics(token.trim()));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!auto) return;
+    const id = window.setInterval(() => void load(), 8000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto, token]);
+
+  const maxClick = data?.topEvents.reduce((m, e) => Math.max(m, e.count), 0) ?? 0;
+
+  return (
+    <Section title="📡 Live telemetry · ALL users" count={data ? data.totals.sessions : "🔒"} defaultOpen>
+      <div className="adm-row">
+        <input
+          type="password"
+          className="adm-token"
+          placeholder="admin token (x-admin-token)"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void load(); }}
+        />
+        <button className="adm-btn hot" onClick={() => void load()} disabled={loading}>
+          {loading ? "…" : data ? "Refresh" : "Connect"}
+        </button>
+        <label className="adm-auto">
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto
+        </label>
+      </div>
+      {err && <p className="adm-note warn">⚠ {err}</p>}
+
+      {data && (
+        <>
+          <div className="adm-grid">
+            <Stat k="Sessions (players)" v={data.totals.sessions} />
+            <Stat k="Events tracked" v={num(data.totals.events)} />
+            <Stat k="Total clicks" v={num(data.totals.clicks)} />
+            <Stat k="Refreshed" v={rel(data.generatedAt)} />
+          </div>
+
+          <h5 className="adm-h5">🖱 What everyone clicks (top {Math.min(12, data.topEvents.length)})</h5>
+          <div className="adm-bars">
+            {data.topEvents.slice(0, 12).map((e) => (
+              <div key={e.name} className="adm-bar-row" title={`${e.name} · ${e.count}`}>
+                <span className="adm-bar-label">{e.name}</span>
+                <span className="adm-bar-track"><i style={{ width: `${maxClick ? (e.count / maxClick) * 100 : 0}%` }} /></span>
+                <span className="adm-bar-n">{e.count}</span>
+              </div>
+            ))}
+            {data.topEvents.length === 0 && <p className="adm-note">No events yet.</p>}
+          </div>
+
+          <h5 className="adm-h5">🌍 By country</h5>
+          <div className="adm-objs">
+            {data.byCountry.map((c) => (
+              <span key={c.country} className="adm-tag">{c.country} · {c.count}</span>
+            ))}
+          </div>
+
+          <h5 className="adm-h5">👤 Players ({data.sessions.length})</h5>
+          <table className="adm-table">
+            <thead><tr><th>Email</th><th>Location</th><th>Clicks</th><th>Wallet</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {data.sessions.map((s: any) => (
+                <tr key={s.session_id} title={`${s.ip ?? "?"} · ${s.isp ?? ""} · ${s.user_agent ?? ""}`}>
+                  <td>{s.email ?? <span className="adm-dim">anon</span>}</td>
+                  <td>{[s.city, s.country].filter(Boolean).join(", ") || <span className="adm-dim">—</span>}</td>
+                  <td>{s.total_clicks}</td>
+                  <td>{s.wallet_address ? `${String(s.wallet_address).slice(0, 6)}…` : <span className="adm-dim">—</span>}</td>
+                  <td>{s.last_seen ? rel(s.last_seen) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h5 className="adm-h5">⏱ Recent event stream</h5>
+          <div className="adm-stream">
+            {data.recent.map((r, i) => (
+              <div key={i} className="adm-stream-row">
+                <span className={`adm-etype adm-etype-${r.type}`}>{r.type}</span>
+                <span className="adm-ename">{r.name}</span>
+                <span className="adm-dim">{r.email ?? r.city ?? r.session_id.slice(0, 8)}</span>
+                <span className="adm-dim">{rel(r.at)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <p className="adm-note adm-dim">This device's session id: {currentSessionId().slice(0, 13)}…</p>
+    </Section>
+  );
+}
+
 export default function AdminPanel({
   game,
   wallet,
@@ -155,6 +288,9 @@ export default function AdminPanel({
           <button className="adm-btn" onClick={maxAllRooms}>Max rooms</button>
           <button className="adm-btn hot" onClick={healAll}>God mode</button>
         </div>
+
+        {/* ---- cross-user telemetry (InsForge backend) ---- */}
+        <TelemetrySection />
 
         {/* ---- derived stats ---- */}
         <Section title="Overview · derived" count={`${num(stats.might)}⚔`}>

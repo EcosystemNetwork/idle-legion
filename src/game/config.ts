@@ -1,6 +1,7 @@
 import type {
   Aptitude,
   BossDef,
+  CombatClass,
   GearDef,
   OnchainListing,
   RaidMission,
@@ -12,7 +13,7 @@ import type {
 } from "./types";
 import { CATALOG_GEAR, CATALOG_LISTINGS } from "./assets";
 
-export const STORAGE_KEY = "idle-legion-v5";
+export const STORAGE_KEY = "idle-legion-v6";
 
 /** Salt for the save-integrity signature (deters casual localStorage edits). */
 export const SAVE_SALT = "kekius-rose-from-the-mempool";
@@ -34,6 +35,78 @@ export const RENOWN_PER_BOSS = 2;
 /** Each point of banked Renown adds this to the global output multiplier. */
 export const RENOWN_BOOST_PER = 0.03; // +3% output per Renown
 
+// ---------- Health, wounds & healing (Fallout-Shelter stakes) ----------
+/** HP each level adds, as a fraction of the tier's base HP. */
+export const HP_PER_LEVEL = 0.1;
+/** Salves consumed to heal one full HP bar's worth of wounds. */
+export const SALVES_PER_FULL_HEAL = 12;
+/** Reviving a downed fighter costs this multiple of a full heal. */
+export const REVIVE_SALVE_MULT = 1.6;
+/** Provisions upkeep is paid; a downed fighter still eats but produces nothing. */
+
+// ---------- Stamina (DeFi-Kingdoms energy gate on raids/arena) ----------
+export const MAX_STAMINA = 100;
+/** Stamina regained per second while idle/resting in the Hall. */
+export const STAMINA_REGEN_IDLE = 1.4;
+/** Stamina regained per second while working a room (tired but not resting). */
+export const STAMINA_REGEN_WORKING = 0.5;
+/** Stamina a fighter spends per raid and per arena swing. */
+export const STAMINA_PER_RAID = 45;
+export const STAMINA_PER_FIGHT = 18;
+
+// ---------- Gear upgrade & fusion (Crypto-Dynasty gear economy) ----------
+/** Each upgrade level scales a piece's might & output by this fraction. */
+export const GEAR_UPGRADE_PER_LEVEL = 0.25;
+/** Hard cap on gear level so numbers stay legible. */
+export const GEAR_MAX_LEVEL = 10;
+/** Base gold to take a piece from L0→L1; scales with rarity & current level. */
+export const GEAR_UPGRADE_BASE: Record<Rarity, number> = {
+  common: 60,
+  uncommon: 140,
+  rare: 360,
+  epic: 900,
+  legendary: 2200,
+};
+/** Fusing a duplicate into a piece grants this many free upgrade levels. */
+export const FUSION_LEVELS = 2;
+
+// ---------- Combat class triangle (melee ▶ ranged ▶ charge ▶ melee) ----------
+/** Damage multiplier when your class hard-counters the enemy's. */
+export const CLASS_ADVANTAGE = 1.35;
+/** Damage multiplier when the enemy hard-counters yours. */
+export const CLASS_DISADVANTAGE = 0.75;
+/** What each class beats. melee beats ranged, ranged beats charge, charge beats melee. */
+export const CLASS_BEATS: Record<CombatClass, CombatClass> = {
+  melee: "ranged",
+  ranged: "charge",
+  charge: "melee",
+};
+export const CLASS_LABEL: Record<CombatClass, string> = {
+  melee: "Melee",
+  ranged: "Ranged",
+  charge: "Charge",
+};
+export const CLASS_ICON: Record<CombatClass, string> = {
+  melee: "🗡️",
+  ranged: "🏹",
+  charge: "🐎",
+};
+
+// ---------- Daily-login reward (retention ritual) ----------
+/** Base gold for a daily claim; grows with streak. */
+export const DAILY_GOLD_BASE = 400;
+export const DAILY_GOLD_PER_STREAK = 220;
+/** Every Nth streak day also drops a lunchbox. */
+export const DAILY_LUNCHBOX_EVERY = 3;
+/** Streak resets if you miss more than this many days. */
+export const DAILY_GRACE_DAYS = 1;
+
+// ---------- On-chain Treasury Vault yield (DFK bank / real-yield) ----------
+/** Gold/sec the vault yields per USD ever staked on-chain — a run-spanning faucet. */
+export const WARCHEST_YIELD_PER_USD = 0.9;
+/** Vault storage cap = staked USD × this (so it must be collected, like a room). */
+export const WARCHEST_STORE_PER_USD = 1800;
+
 export const APTITUDE_LABEL: Record<Aptitude, string> = {
   labor: "Labor",
   hunt: "Hunt",
@@ -53,8 +126,10 @@ export const TIERS: Record<Tier, TierDef> = {
     name: "Recruit",
     icon: "🪖",
     aptitude: "labor",
+    combatClass: "melee",
     output: 0.6,
     might: 1,
+    hp: 24,
     recruitCost: 20,
   },
   spearman: {
@@ -62,8 +137,10 @@ export const TIERS: Record<Tier, TierDef> = {
     name: "Spearman",
     icon: "🗡️",
     aptitude: "war",
+    combatClass: "melee",
     output: 2.4,
     might: 6,
+    hp: 48,
     recruitCost: 120,
   },
   archer: {
@@ -71,8 +148,10 @@ export const TIERS: Record<Tier, TierDef> = {
     name: "Archer",
     icon: "🏹",
     aptitude: "hunt",
+    combatClass: "ranged",
     output: 7,
     might: 14,
+    hp: 40,
     recruitCost: 550,
   },
   cavalry: {
@@ -80,8 +159,10 @@ export const TIERS: Record<Tier, TierDef> = {
     name: "Cavalry",
     icon: "🐎",
     aptitude: "labor",
+    combatClass: "charge",
     output: 22,
     might: 44,
+    hp: 110,
     recruitCost: 2600,
   },
   champion: {
@@ -89,8 +170,10 @@ export const TIERS: Record<Tier, TierDef> = {
     name: "Champion",
     icon: "👑",
     aptitude: "war",
+    combatClass: "charge",
     output: 70,
     might: 170,
+    hp: 320,
     recruitCost: 13000,
   },
 };
@@ -151,6 +234,17 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     buildCost: 200,
     description: "Hunters stock grain & hopium. A fed legion mines hard; a starving one posts through it at half-speed.",
   },
+  infirmary: {
+    type: "infirmary",
+    name: "Infirmary",
+    icon: "⛑️",
+    aptitude: "hunt",
+    produces: "salves",
+    capacityPerLevel: 2,
+    storePerLevel: 120,
+    buildCost: 350,
+    description: "Field-medics boil bandages and cope-tonics into salves — the only thing that mends a legion bled in the arena or the Wastes.",
+  },
   forge: {
     type: "forge",
     name: "War Forge",
@@ -179,18 +273,18 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     name: "Treasury Vault",
     icon: "🏦",
     aptitude: null,
-    produces: null,
+    produces: "gold", // yields gold from staked on-chain USD (see warChestYield)
     capacityPerLevel: 0,
-    storePerLevel: 0,
+    storePerLevel: 0, // storage is derived from staked USD, not room level
     buildCost: 0,
     description:
-      "The one chamber that still touches the old Chains. The Universal Account reaches any Chain — no bridge — and lands USDT on Arbitrum to hire a Free Company.",
+      "The one chamber that still touches the old Chains. The Universal Account reaches any Chain — no bridge — and lands USDT on Arbitrum. Staked USD keeps yielding gold, run after run.",
     unique: true,
   },
 };
 
 /** Rooms the player can dig (hall/warchest are pre-placed). */
-export const BUILDABLE: RoomType[] = ["mine", "granary", "forge", "warroom"];
+export const BUILDABLE: RoomType[] = ["mine", "granary", "infirmary", "forge", "warroom"];
 
 export const RAIDS: RaidMission[] = [
   {
@@ -200,6 +294,8 @@ export const RAIDS: RaidMission[] = [
     durationSec: 20,
     minMight: 6,
     goldReward: 90,
+    enemyClass: "ranged",
+    danger: 0.12,
     description: "Scavenge the village edge for loose coin. Even recruits GMI here.",
   },
   {
@@ -209,6 +305,8 @@ export const RAIDS: RaidMission[] = [
     durationSec: 45,
     minMight: 45,
     goldReward: 380,
+    enemyClass: "charge",
+    danger: 0.28,
     description: "Light caravan down the old trade road, carrying heavy bags. Hit it.",
   },
   {
@@ -218,6 +316,8 @@ export const RAIDS: RaidMission[] = [
     durationSec: 90,
     minMight: 160,
     goldReward: 1500,
+    enemyClass: "melee",
+    danger: 0.42,
     description: "Crack a warlord's walls, empty his cold storage. Needs real might.",
   },
   {
@@ -227,6 +327,8 @@ export const RAIDS: RaidMission[] = [
     durationSec: 180,
     minMight: 550,
     goldReward: 6200,
+    enemyClass: "ranged",
+    danger: 0.6,
     description: "All-in on a whale's prize city. This is the send — diamond hands only.",
   },
 ];
@@ -345,6 +447,7 @@ export const ROOM_ART: Record<RoomType, string> = {
   hall: `${B}art/room-hall.jpg`,
   mine: `${B}art/room-mine.jpg`,
   granary: `${B}art/room-granary.jpg`,
+  infirmary: KIT.bld.alchemy, // apothecary/alchemy kit art fits the field-medbay
   forge: `${B}art/room-forge.jpg`,
   warroom: `${B}art/room-warroom.jpg`,
   warchest: `${B}art/room-warchest.jpg`,
@@ -400,9 +503,9 @@ export const GEAR_BY_ID: Record<string, GearDef> = Object.fromEntries(
 
 // ---------- Arena bosses (Crypto Dynasty World Boss) ----------
 export const BOSSES: BossDef[] = [
-  { id: "caged", name: "The Caged Beast", img: `${B}art/boss-caged.jpg`, baseHp: 600, reward: 800 },
-  { id: "chariot", name: "Rival Dynasty Charioteer", img: `${B}art/boss-chariot.jpg`, baseHp: 2600, reward: 3400 },
-  { id: "kekius", name: "Kekius the Tyrant — the dark timeline", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000, model: KEKIUS_MODEL },
+  { id: "caged", name: "The Caged Beast", img: `${B}art/boss-caged.jpg`, baseHp: 600, reward: 800, enemyClass: "charge", bite: 0.14 },
+  { id: "chariot", name: "Rival Dynasty Charioteer", img: `${B}art/boss-chariot.jpg`, baseHp: 2600, reward: 3400, enemyClass: "ranged", bite: 0.2 },
+  { id: "kekius", name: "Kekius the Tyrant — the dark timeline", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000, enemyClass: "melee", bite: 0.28, model: KEKIUS_MODEL },
 ];
 
 export const FIGHT_COOLDOWN_MS = 6000;

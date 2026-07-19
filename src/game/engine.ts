@@ -1,15 +1,34 @@
 import {
   APTITUDE_LABEL,
   BOSSES,
+  CLASS_ADVANTAGE,
+  CLASS_BEATS,
+  CLASS_DISADVANTAGE,
+  DAILY_GOLD_BASE,
+  DAILY_GOLD_PER_STREAK,
+  DAILY_GRACE_DAYS,
+  DAILY_LUNCHBOX_EVERY,
   FIGHT_COOLDOWN_MS,
+  FUSION_LEVELS,
   GEAR_BY_ID,
   GEAR_CATALOG,
+  GEAR_MAX_LEVEL,
   GEAR_SELL_VALUE,
+  GEAR_UPGRADE_BASE,
+  GEAR_UPGRADE_PER_LEVEL,
+  HP_PER_LEVEL,
   MATCH_BONUS,
+  MAX_STAMINA,
   MERCENARY_TIERS,
   RAIDS,
   RARITY_META,
+  REVIVE_SALVE_MULT,
   ROOMS,
+  SALVES_PER_FULL_HEAL,
+  STAMINA_PER_FIGHT,
+  STAMINA_PER_RAID,
+  STAMINA_REGEN_IDLE,
+  STAMINA_REGEN_WORKING,
   STARVING_PENALTY,
   STORAGE_KEY,
   TIERS,
@@ -27,6 +46,8 @@ import {
   MIGHT_PER_LEVEL,
   OUTPUT_PER_LEVEL,
   PASSIVE_XP_PER_SEC,
+  WARCHEST_STORE_PER_USD,
+  WARCHEST_YIELD_PER_USD,
   XP_COLLECT,
   XP_FIGHT,
   XP_FIGHT_KILL,
@@ -35,6 +56,7 @@ import {
   randomName,
 } from "./config";
 import type {
+  CombatClass,
   Dweller,
   DerivedStats,
   GameState,
@@ -46,6 +68,9 @@ import type {
   MarketOffer,
   Objective,
   ObjectiveKind,
+  RaidLogEntry,
+  RaidMission,
+  RaidReport,
   Rarity,
   Room,
   RoomType,
@@ -60,18 +85,43 @@ function uid(prefix: string): string {
   ).toString(36)}`;
 }
 
+/** Max HP for a dweller — tier base scaled by level (survivability grind). */
+export function dwellerMaxHp(d: Dweller): number {
+  return Math.round(TIERS[d.tier].hp * (1 + HP_PER_LEVEL * (d.level - 1)));
+}
+
+/** 0..1 health fraction, for the red HP bar. */
+export function hpFrac(d: Dweller): number {
+  const max = dwellerMaxHp(d);
+  return max > 0 ? Math.max(0, Math.min(1, d.hp / max)) : 0;
+}
+
+/** 0..1 stamina fraction, for the energy bar. */
+export function staminaFrac(d: Dweller): number {
+  return Math.max(0, Math.min(1, d.stamina / MAX_STAMINA));
+}
+
+/** Combat class of a dweller (from its tier). */
+export function dwellerClass(d: Dweller): CombatClass {
+  return TIERS[d.tier].combatClass;
+}
+
 export function makeDweller(tier: Tier): Dweller {
   const def = TIERS[tier];
-  return {
+  const base: Dweller = {
     id: uid("d"),
     tier,
     name: randomName(),
     aptitude: def.aptitude,
     level: 1,
     xp: 0,
+    hp: 0,
+    stamina: MAX_STAMINA,
     roomId: null,
     equipped: { weapon: null, armor: null, mount: null },
   };
+  base.hp = dwellerMaxHp(base);
+  return base;
 }
 
 function makeRoom(type: RoomType, level = 1): Room {
@@ -102,6 +152,7 @@ export function createInitialState(now = Date.now()): GameState {
   return {
     gold: 80,
     provisions: 120,
+    salves: 30, // a small starter kit so the first wounds can be mended
     rooms: [quarters, hall, mine, warchest],
     dwellers,
     market: rollMarket(),
@@ -114,15 +165,20 @@ export function createInitialState(now = Date.now()): GameState {
     squad: [],
     warChestUsd: 0,
     mercenaryBoost: 0,
+    warChest: { stored: 0, totalYielded: 0, lastTick: now },
     fundedOnchain: false,
     lastFundTxId: null,
     renown: 0,
     descents: 0,
+    daily: { lastClaimDay: 0, streak: 0 },
     offlineSummary: null,
+    raidReport: null,
     levelUps: [],
     totalRaids: 0,
     totalGoldEarned: 0,
     totalBossWins: 0,
+    totalGearUpgrades: 0,
+    totalHeals: 0,
     lastTick: now,
   };
 }
@@ -135,6 +191,8 @@ const OBJ_BASE: Record<ObjectiveKind, number> = {
   legion: 4,
   might: 60,
   boss: 1,
+  upgrade: 2,
+  heal: 3,
 };
 
 function makeObjective(kind: ObjectiveKind, mult: number): Objective {
@@ -151,6 +209,7 @@ function defaultObjectives(): Objective[] {
     makeObjective("gold", 1),
     makeObjective("raids", 1),
     makeObjective("legion", 1),
+    makeObjective("upgrade", 1),
   ];
 }
 
@@ -161,6 +220,8 @@ export function objectiveProgress(state: GameState, o: Objective): number {
     case "legion": return state.dwellers.length;
     case "might": return Math.floor(deriveStats(state).might);
     case "boss": return state.totalBossWins;
+    case "upgrade": return state.totalGearUpgrades;
+    case "heal": return state.totalHeals;
   }
 }
 
@@ -171,16 +232,19 @@ export function objectiveLabel(o: Objective): string {
     case "legion": return `Field a legion of ${o.target}`;
     case "might": return `Reach ${o.target} might`;
     case "boss": return `Defeat ${o.target} arena boss${o.target > 1 ? "es" : ""}`;
+    case "upgrade": return `Upgrade gear ${o.target} time${o.target > 1 ? "s" : ""}`;
+    case "heal": return `Heal ${o.target} wound${o.target > 1 ? "s" : ""}`;
   }
 }
+
+const OBJ_ROTATION: ObjectiveKind[] = ["gold", "raids", "legion", "might", "boss", "upgrade", "heal"];
 
 export function claimObjective(state: GameState, objId: string): GameState {
   const o = state.objectives.find((x) => x.id === objId);
   if (!o) return state;
   if (objectiveProgress(state, o) < o.target) throw new Error("Objective not complete yet.");
   // advance: replace with a harder objective of a rotating kind
-  const kinds: ObjectiveKind[] = ["gold", "raids", "legion", "might", "boss"];
-  const nextKind = kinds[(kinds.indexOf(o.kind) + 1) % kinds.length];
+  const nextKind = OBJ_ROTATION[(OBJ_ROTATION.indexOf(o.kind) + 1) % OBJ_ROTATION.length];
   const mult = 1 + 0.6 * (o.reward + state.totalBossWins + 1);
   return {
     ...state,
@@ -232,12 +296,32 @@ export function equippedGearDefs(state: GameState, d: Dweller): GearDef[] {
   return out;
 }
 
+/** Upgrade level of a gear instance (0 = base). */
+export function gearLevel(item: GearItem): number {
+  return item.level ?? 0;
+}
+
+/** Might/output a gear instance provides, scaled by its upgrade level. */
+export function gearItemStats(item: GearItem): { might: number; output: number } {
+  const def = GEAR_BY_ID[item.defId];
+  if (!def) return { might: 0, output: 0 };
+  const mult = 1 + GEAR_UPGRADE_PER_LEVEL * gearLevel(item);
+  return {
+    might: def.might * mult,
+    output: def.output * mult,
+  };
+}
+
 function gearBonus(state: GameState, d: Dweller): { might: number; output: number } {
   let might = 0;
   let output = 0;
-  for (const g of equippedGearDefs(state, d)) {
-    might += g.might;
-    output += g.output;
+  const ids = [d.equipped.weapon, d.equipped.armor, d.equipped.mount].filter(Boolean) as string[];
+  for (const id of ids) {
+    const item = state.gear.find((g) => g.id === id);
+    if (!item) continue;
+    const s = gearItemStats(item);
+    might += s.might;
+    output += s.output;
   }
   return { might, output };
 }
@@ -287,10 +371,23 @@ export function globalBoost(state: GameState): number {
   return state.mercenaryBoost + renownBoost(state);
 }
 
-/** Live per-second output of a room (gold / provisions / might), boosts applied. */
+/** Gold/sec the on-chain Treasury Vault yields from staked USD (DFK-style real yield). */
+export function warChestYield(state: GameState): number {
+  if (state.warChestUsd <= 0) return 0;
+  return state.warChestUsd * WARCHEST_YIELD_PER_USD * (1 + globalBoost(state));
+}
+
+/** Storage cap for the Treasury Vault yield pool (scales with staked USD). */
+export function warChestStoreCap(state: GameState): number {
+  return state.warChestUsd * WARCHEST_STORE_PER_USD;
+}
+
+/** Live per-second output of a room (gold / provisions / might / salves), boosts applied. */
 export function roomRate(state: GameState, room: Room, fed: boolean): number {
   const def = ROOMS[room.type];
   if (!def.produces) return 0;
+  // The vault yields from staked USD, not from workers.
+  if (room.type === "warchest") return warChestYield(state);
   if (state.incident?.roomId === room.id) return 0; // room offline during incident
   let rate = 0;
   for (const wid of room.workers) {
@@ -301,8 +398,8 @@ export function roomRate(state: GameState, room: Room, fed: boolean): number {
     rate += o;
   }
   rate *= 1 + globalBoost(state);
-  // Starving hurts mining & forging, but NOT hunting (so the vault can recover).
-  if (!fed && def.produces !== "provisions") rate *= STARVING_PENALTY;
+  // Starving hurts mining & forging, but NOT hunting/healing (so the legion can recover).
+  if (!fed && def.produces !== "provisions" && def.produces !== "salves") rate *= STARVING_PENALTY;
   return rate;
 }
 
@@ -324,28 +421,37 @@ export function deriveStats(state: GameState): DerivedStats {
   const fed = state.provisions > 0;
   const population = state.dwellers.length;
   const idleCount = state.dwellers.filter(
-    (d) => d.roomId == null && !isOnRaid(state, d.id),
+    (d) => d.roomId == null && !isOnRaid(state, d.id) && !d.downed,
   ).length;
 
   let goldPerSec = 0;
   let provGross = 0;
+  let salvesPerSec = 0;
   let forgeMight = 0;
   for (const room of state.rooms) {
     const def = ROOMS[room.type];
     if (def.produces === "gold") goldPerSec += roomRate(state, room, fed);
     else if (def.produces === "provisions") provGross += roomRate(state, room, fed);
+    else if (def.produces === "salves") salvesPerSec += roomRate(state, room, fed);
     else if (def.produces === "might") forgeMight += roomRate(state, room, fed);
   }
 
   let might = forgeMight;
-  for (const d of state.dwellers) might += dwellerMight(d, state);
+  let woundedCount = 0;
+  for (const d of state.dwellers) {
+    might += dwellerMight(d, state);
+    if (d.downed || d.hp < dwellerMaxHp(d)) woundedCount++;
+  }
 
   const provisionsPerSec = provGross - population * UPKEEP_PER_DWELLER;
 
-  return { might, goldPerSec, provisionsPerSec, population, idleCount, fed };
+  return { might, goldPerSec, provisionsPerSec, salvesPerSec, population, idleCount, woundedCount, fed };
 }
 
 // ---------- tick ----------
+
+/** Damage per second an unresolved incident inflicts on the room's workers. */
+const INCIDENT_DPS = 4;
 
 export function tick(state: GameState, now = Date.now()): GameState {
   const elapsed = Math.max(0, (now - state.lastTick) / 1000);
@@ -362,6 +468,18 @@ export function tick(state: GameState, now = Date.now()): GameState {
     const stored = Math.min(cap, room.stored + rate * elapsed);
     return { ...room, stored, lastTick: now };
   });
+
+  // The on-chain Treasury Vault yields gold from staked USD into its own pool.
+  {
+    const cap = warChestStoreCap(state);
+    const yieldRate = warChestYield(state);
+    if (cap > 0 && yieldRate > 0) {
+      const stored = Math.min(cap, state.warChest.stored + yieldRate * elapsed);
+      next.warChest = { ...state.warChest, stored, lastTick: now };
+    } else {
+      next.warChest = { ...state.warChest, lastTick: now };
+    }
+  }
 
   // Population eats. Upkeep drains the provisions pool continuously.
   const upkeep = state.dwellers.length * UPKEEP_PER_DWELLER * elapsed;
@@ -400,6 +518,45 @@ export function tick(state: GameState, now = Date.now()): GameState {
   }
   if (workingIds.length > 0) {
     next = applyXp(next, workingIds, PASSIVE_XP_PER_SEC * elapsed);
+  }
+
+  // Stamina regen (rest in the Hall recovers fastest) + incident wounds.
+  // A worker in a burning room bleeds; drop them when they fall so the room
+  // stops paying out and the player feels the loss.
+  const incidentRoomId = next.incident?.roomId ?? null;
+  const onRaidIds = new Set(next.activeRaid?.squad ?? []);
+  const downedNow: string[] = [];
+  next.dwellers = next.dwellers.map((d) => {
+    let stamina = d.stamina;
+    let hp = d.hp;
+    let downed = d.downed;
+    // regen: no recovery while marching on a raid
+    if (!onRaidIds.has(d.id)) {
+      const regen = d.roomId == null ? STAMINA_REGEN_IDLE : STAMINA_REGEN_WORKING;
+      stamina = Math.min(MAX_STAMINA, stamina + regen * elapsed);
+    }
+    // incident wounds workers in the stricken room
+    if (incidentRoomId && d.roomId === incidentRoomId && !downed) {
+      hp = Math.max(0, hp - INCIDENT_DPS * elapsed);
+      if (hp <= 0) {
+        downed = true;
+        downedNow.push(d.id);
+      }
+    }
+    return stamina === d.stamina && hp === d.hp && downed === d.downed
+      ? d
+      : { ...d, stamina, hp, downed };
+  });
+  // Pull the downed out of their rooms (and clear their assignment).
+  if (downedNow.length) {
+    const downSet = new Set(downedNow);
+    next.rooms = next.rooms.map((r) => ({
+      ...r,
+      workers: r.workers.filter((w) => !downSet.has(w)),
+    }));
+    next.dwellers = next.dwellers.map((d) =>
+      downSet.has(d.id) ? { ...d, roomId: null } : d,
+    );
   }
 
   next.lastTick = now;
@@ -482,12 +639,14 @@ export function rerollMarket(state: GameState): GameState {
 
 /** Premium on-chain purchase — a champion/epic gladiator joins (bypasses hall cap). */
 export function grantGladiator(state: GameState, tier: Tier): GameState {
-  return { ...state, dwellers: [...state.dwellers, makeDweller(tier)] };
+  const d = makeDweller(tier);
+  d.onchain = true; // real money is permanent — this hero survives a Descend
+  return { ...state, dwellers: [...state.dwellers, d] };
 }
 
 export function grantGearItem(state: GameState, defId: string): GameState {
   if (!GEAR_BY_ID[defId]) return state;
-  return { ...state, gear: [...state.gear, { id: uid("g"), defId }] };
+  return { ...state, gear: [...state.gear, { id: uid("g"), defId, onchain: true }] };
 }
 
 export function heroSellValue(d: Dweller): number {
@@ -529,6 +688,71 @@ export function sellGearItem(state: GameState, gearItemId: string): GameState {
     totalGoldEarned: state.totalGoldEarned + gold,
     gear: state.gear.filter((g) => g.id !== gearItemId),
     dwellers,
+  };
+}
+
+// ---------- gear upgrade & fusion (Crypto-Dynasty gear economy) ----------
+
+/** Gold to take a gear instance from its current level to the next. */
+export function gearUpgradeCost(item: GearItem): number {
+  const def = GEAR_BY_ID[item.defId];
+  if (!def) return 0;
+  const base = GEAR_UPGRADE_BASE[def.rarity];
+  return Math.floor(base * Math.pow(1.55, gearLevel(item)));
+}
+
+export function gearAtMaxLevel(item: GearItem): boolean {
+  return gearLevel(item) >= GEAR_MAX_LEVEL;
+}
+
+/** Pour gold into a piece to raise its level (and its might/output). */
+export function upgradeGear(state: GameState, gearItemId: string): GameState {
+  const item = state.gear.find((g) => g.id === gearItemId);
+  if (!item) throw new Error("No such gear.");
+  if (gearAtMaxLevel(item)) throw new Error("This piece is already at max forge level.");
+  const cost = gearUpgradeCost(item);
+  if (state.gold < cost) throw new Error("Not enough gold to forge this higher.");
+  return {
+    ...state,
+    gold: state.gold - cost,
+    totalGearUpgrades: state.totalGearUpgrades + 1,
+    gear: state.gear.map((g) =>
+      g.id === gearItemId ? { ...g, level: gearLevel(g) + 1 } : g,
+    ),
+  };
+}
+
+/** Unequipped duplicates (same blueprint) that could be fused into `item`. */
+export function fusionCandidates(state: GameState, gearItemId: string): GearItem[] {
+  const item = state.gear.find((g) => g.id === gearItemId);
+  if (!item) return [];
+  const equipped = new Set<string>();
+  for (const d of state.dwellers) {
+    if (d.equipped.weapon) equipped.add(d.equipped.weapon);
+    if (d.equipped.armor) equipped.add(d.equipped.armor);
+    if (d.equipped.mount) equipped.add(d.equipped.mount);
+  }
+  return state.gear.filter(
+    (g) => g.id !== gearItemId && g.defId === item.defId && !equipped.has(g.id),
+  );
+}
+
+/** Consume a duplicate to jump a piece several forge levels at once. */
+export function fuseGear(state: GameState, targetId: string, sacrificeId: string): GameState {
+  const target = state.gear.find((g) => g.id === targetId);
+  const sacrifice = state.gear.find((g) => g.id === sacrificeId);
+  if (!target || !sacrifice) throw new Error("Bad fusion.");
+  if (target.id === sacrifice.id || target.defId !== sacrifice.defId) {
+    throw new Error("Fusion needs a duplicate of the same piece.");
+  }
+  if (gearAtMaxLevel(target)) throw new Error("This piece is already at max forge level.");
+  const newLevel = Math.min(GEAR_MAX_LEVEL, gearLevel(target) + FUSION_LEVELS);
+  return {
+    ...state,
+    totalGearUpgrades: state.totalGearUpgrades + 1,
+    gear: state.gear
+      .filter((g) => g.id !== sacrificeId)
+      .map((g) => (g.id === targetId ? { ...g, level: newLevel } : g)),
   };
 }
 
@@ -577,6 +801,7 @@ export function assignDweller(
   const room = roomById(state, roomId);
   if (!d || !room) throw new Error("Bad assignment.");
   if (isOnRaid(state, dwellerId)) throw new Error("That dweller is out on a raid.");
+  if (d.downed) throw new Error("That gladiator is down — heal them in the Infirmary first.");
   if (roomCapacity(room) <= 0) throw new Error("This room takes no workers.");
   if (room.workers.length >= roomCapacity(room) && d.roomId !== roomId) {
     throw new Error(`${ROOMS[room.type].name} is fully staffed.`);
@@ -616,7 +841,7 @@ export function autoStaff(state: GameState, roomId: string): GameState {
   let cur = roomById(next, roomId)!;
   while (cur.workers.length < cap) {
     const idle = next.dwellers
-      .filter((d) => d.roomId == null && !isOnRaid(next, d.id))
+      .filter((d) => d.roomId == null && !isOnRaid(next, d.id) && !d.downed)
       .sort((a, b) => {
         const am = apt && a.aptitude === apt ? 1 : 0;
         const bm = apt && b.aptitude === apt ? 1 : 0;
@@ -690,10 +915,28 @@ export function clearLevelUps(state: GameState): GameState {
   return state.levelUps.length ? { ...state, levelUps: [] } : state;
 }
 
+/** Collect the on-chain Treasury Vault's yielded gold into your purse. */
+export function collectWarChest(state: GameState): GameState {
+  const amount = Math.floor(state.warChest.stored);
+  if (amount <= 0) return state;
+  return {
+    ...state,
+    gold: state.gold + amount,
+    totalGoldEarned: state.totalGoldEarned + amount,
+    warChest: {
+      ...state.warChest,
+      stored: state.warChest.stored - amount,
+      totalYielded: state.warChest.totalYielded + amount,
+    },
+  };
+}
+
 export function collectRoom(state: GameState, roomId: string): GameState {
   const room = roomById(state, roomId);
   if (!room) return state;
   const def = ROOMS[room.type];
+  // The Treasury Vault collects from the staked-USD yield pool, not room storage.
+  if (room.type === "warchest") return collectWarChest(state);
   const amount = Math.floor(room.stored);
   if (amount <= 0) return state;
   const patch: Partial<GameState> = {};
@@ -702,6 +945,8 @@ export function collectRoom(state: GameState, roomId: string): GameState {
     patch.totalGoldEarned = state.totalGoldEarned + amount;
   } else if (def.produces === "provisions") {
     patch.provisions = state.provisions + amount;
+  } else if (def.produces === "salves") {
+    patch.salves = state.salves + amount;
   }
   const collected: GameState = {
     ...state,
@@ -715,6 +960,53 @@ export function collectAll(state: GameState): GameState {
   let next = state;
   for (const r of state.rooms) {
     if (roomStoreCap(r) > 0 && r.stored >= 1) next = collectRoom(next, r.id);
+  }
+  if (next.warChest.stored >= 1) next = collectWarChest(next);
+  return next;
+}
+
+// ---------- healing (salves mend wounds; downed need a costly revive) ----------
+
+/** Dwellers that are hurt (below full HP) or outright downed. */
+export function woundedDwellers(state: GameState): Dweller[] {
+  return state.dwellers.filter((d) => d.downed || d.hp < dwellerMaxHp(d));
+}
+
+/** Salves needed to fully mend a dweller (reviving the downed costs a premium). */
+export function healSalveCost(d: Dweller): number {
+  const max = dwellerMaxHp(d);
+  const missing = Math.max(0, max - d.hp);
+  const frac = max > 0 ? missing / max : 0;
+  let cost = frac * SALVES_PER_FULL_HEAL;
+  if (d.downed) cost = Math.max(cost, SALVES_PER_FULL_HEAL) * REVIVE_SALVE_MULT;
+  return Math.max(1, Math.ceil(cost));
+}
+
+/** Mend one dweller to full, spending salves. Throws if the stores are short. */
+export function healDweller(state: GameState, id: string): GameState {
+  const d = dwellerById(state, id);
+  if (!d) return state;
+  const max = dwellerMaxHp(d);
+  if (!d.downed && d.hp >= max) return state; // already healthy
+  const cost = healSalveCost(d);
+  if (state.salves < cost) throw new Error(`Not enough salves — need ${cost}. Staff the Infirmary.`);
+  return {
+    ...state,
+    salves: state.salves - cost,
+    totalHeals: state.totalHeals + 1,
+    dwellers: state.dwellers.map((x) =>
+      x.id === id ? { ...x, hp: max, downed: false } : x,
+    ),
+  };
+}
+
+/** Mend as many wounded as the salve stores allow, cheapest first. */
+export function healAll(state: GameState): GameState {
+  let next = state;
+  const queue = woundedDwellers(next).sort((a, b) => healSalveCost(a) - healSalveCost(b));
+  for (const d of queue) {
+    if (next.salves < healSalveCost(d)) continue;
+    next = healDweller(next, d.id);
   }
   return next;
 }
@@ -761,9 +1053,9 @@ export function rushRoom(state: GameState, roomId: string): GameState {
 
 // ---------- squad selection (Fix #4) ----------
 
-/** Dwellers currently available to fight (idle, not already out on a raid). */
+/** Dwellers currently available to fight (idle, not out on a raid, not downed). */
 export function idleDwellers(state: GameState): Dweller[] {
-  return state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id));
+  return state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id) && !d.downed);
 }
 
 /**
@@ -782,6 +1074,29 @@ export function effectiveSquad(state: GameState): Dweller[] {
 export function squadPower(state: GameState, squad: Dweller[]): number {
   const base = squad.reduce((s, d) => s + dwellerMight(d, state), 0);
   return base + (squad.length ? forgeMight(state) : 0);
+}
+
+/** One fighter's class multiplier against an enemy class (the RPS triangle). */
+export function classMultiplierVs(cls: CombatClass, enemy: CombatClass): number {
+  if (CLASS_BEATS[cls] === enemy) return CLASS_ADVANTAGE; // we counter them
+  if (CLASS_BEATS[enemy] === cls) return CLASS_DISADVANTAGE; // they counter us
+  return 1;
+}
+
+/**
+ * Squad-wide damage multiplier vs. an enemy class, weighted by each fighter's
+ * might — so stacking the countering class actually swings the fight. Returns 1
+ * for an empty squad.
+ */
+export function squadClassEdge(state: GameState, squad: Dweller[], enemy: CombatClass): number {
+  let weight = 0;
+  let acc = 0;
+  for (const d of squad) {
+    const w = Math.max(1, dwellerMight(d, state));
+    acc += w * classMultiplierVs(dwellerClass(d), enemy);
+    weight += w;
+  }
+  return weight > 0 ? acc / weight : 1;
 }
 
 export function toggleSquad(state: GameState, dwellerId: string): GameState {
@@ -816,10 +1131,10 @@ export function startRaid(
   const hasWarRoom = state.rooms.some((r) => r.type === "warroom");
   if (!hasWarRoom) throw new Error("Dig a War Room to plan raids.");
 
-  const roster = effectiveSquad(state);
+  const roster = effectiveSquad(state).filter((d) => d.stamina >= STAMINA_PER_RAID);
   const squad = roster.map((d) => d.id);
   if (squad.length === 0) {
-    throw new Error("No idle dwellers to send — unassign some legion first.");
+    throw new Error("No rested dwellers to send — they need stamina to march (rest in the Hall).");
   }
   const might = squadPower(state, roster);
   if (might < mission.minMight) {
@@ -827,8 +1142,13 @@ export function startRaid(
       `Squad might ${Math.floor(might)} < ${mission.minMight}. Forge more might or send stronger dwellers.`,
     );
   }
+  const squadSet = new Set(squad);
   return {
     ...state,
+    // Marching burns stamina — the DFK-style energy gate on questing.
+    dwellers: state.dwellers.map((d) =>
+      squadSet.has(d.id) ? { ...d, stamina: Math.max(0, d.stamina - STAMINA_PER_RAID) } : d,
+    ),
     // Once they march, clear the picks that are now committed so the next raid
     // starts from a clean bench selection.
     squad: state.squad.filter((id) => !squad.includes(id)),
@@ -841,13 +1161,102 @@ export function startRaid(
   };
 }
 
+const RAID_FLAVOR: Record<CombatClass, string[]> = {
+  melee: ["shield-wall bruisers", "a warlord's oathsworn", "pit-scarred brawlers"],
+  ranged: ["slingers on the ridge", "crossbow ambushers", "a screen of skirmishers"],
+  charge: ["outrider lancers", "a chariot picket", "steppe raiders at the gallop"],
+};
+
+/** Build the timestamped after-action feed — the Fallout-Shelter exploration log. */
+function buildRaidLog(
+  mission: RaidMission,
+  edge: number,
+  gold: number,
+  wounded: string[],
+  downed: string[],
+  killed: string[],
+): RaidLogEntry[] {
+  const dur = mission.durationSec;
+  const at = (frac: number) => Math.max(1, Math.round(dur * frac));
+  const foe = RAID_FLAVOR[mission.enemyClass][Math.floor(Math.random() * RAID_FLAVOR[mission.enemyClass].length)];
+  const log: RaidLogEntry[] = [];
+  log.push({ t: at(0.05), icon: mission.icon, text: `The squad marches out to ${mission.name}.`, tone: "flavor" });
+  log.push({ t: at(0.3), icon: "👁️", text: `Scouts spot ${foe} holding the approach.`, tone: "flavor" });
+  if (edge >= 1.15) {
+    log.push({ t: at(0.45), icon: "⚔️", text: `Perfect matchup — the legion hits their flank and they break.`, tone: "fight" });
+  } else if (edge <= 0.9) {
+    log.push({ t: at(0.45), icon: "⚔️", text: `Bad matchup — ${foe} counter the squad's charge and it turns bloody.`, tone: "fight" });
+  } else {
+    log.push({ t: at(0.45), icon: "⚔️", text: `Blades out. A hard, even scrap against ${foe}.`, tone: "fight" });
+  }
+  const midGold = Math.round(gold * 0.45);
+  log.push({ t: at(0.62), icon: "🪙", text: `Cracked a strongbox — ${formatNum(midGold)} sestertii and rising.`, tone: "loot" });
+  for (const n of wounded) log.push({ t: at(0.7 + Math.random() * 0.15), icon: "🩸", text: `${n} takes a wound but holds the line.`, tone: "wound" });
+  for (const n of downed) log.push({ t: at(0.75 + Math.random() * 0.12), icon: "🚑", text: `${n} goes down — dragged out unconscious.`, tone: "wound" });
+  for (const n of killed) log.push({ t: at(0.8 + Math.random() * 0.1), icon: "💀", text: `${n} does not come home. Pour one out.`, tone: "wound" });
+  log.push({ t: at(0.95), icon: "🎁", text: `Loot hauled back: ${formatNum(gold)} gold and a sealed lunchbox.`, tone: "loot" });
+  return log.sort((a, b) => a.t - b.t);
+}
+
 export function claimRaid(state: GameState, now = Date.now()): GameState {
   if (!state.activeRaid) throw new Error("No raid to claim.");
   if (now < state.activeRaid.endsAt) throw new Error("The squad is still marching.");
   const mission = RAIDS.find((m) => m.id === state.activeRaid!.missionId);
   if (!mission) throw new Error("Unknown mission.");
-  const reward = Math.floor(mission.goldReward * (1 + state.mercenaryBoost * 0.5));
-  const squad = state.activeRaid.squad;
+
+  const squadIds = state.activeRaid.squad;
+  const fighters = squadIds
+    .map((id) => dwellerById(state, id))
+    .filter(Boolean) as Dweller[];
+
+  // Class matchup drives both loot and how bloody it gets.
+  const edge = squadClassEdge(state, fighters, mission.enemyClass);
+  const might = Math.max(1, squadPower(state, fighters));
+  const margin = Math.max(1, might / Math.max(1, mission.minMight));
+
+  const reward = Math.floor(mission.goldReward * (1 + state.mercenaryBoost * 0.5) * edge);
+
+  // Resolve each fighter's fate: unhurt / wounded / downed / killed.
+  const wounded: string[] = [];
+  const downed: string[] = [];
+  const killed: string[] = [];
+  const hpPatch = new Map<string, { hp: number; downed: boolean }>();
+  for (const d of fighters) {
+    const max = dwellerMaxHp(d);
+    // more danger & worse matchup → more damage; strong margin & class edge soak it
+    const sev = (mission.danger * (0.6 + Math.random() * 0.8)) / edge / Math.sqrt(margin);
+    const dmg = Math.min(max, sev * max);
+    const hp = Math.max(0, d.hp - dmg);
+    if (hp <= 0) {
+      const deathChance = Math.min(0.3, (mission.danger * 0.35) / margin);
+      if (Math.random() < deathChance) {
+        killed.push(d.name);
+      } else {
+        downed.push(d.name);
+        hpPatch.set(d.id, { hp: 0, downed: true });
+      }
+    } else {
+      if (dmg > max * 0.08) wounded.push(d.name);
+      hpPatch.set(d.id, { hp, downed: false });
+    }
+  }
+
+  const killedSet = new Set(fighters.filter((d) => killed.includes(d.name)).map((d) => d.id));
+  const survivorIds = squadIds.filter((id) => !killedSet.has(id));
+
+  const log = buildRaidLog(mission, edge, reward, wounded, downed, killed);
+  const report: RaidReport = {
+    missionId: mission.id,
+    missionName: mission.name,
+    gold: reward,
+    xp: XP_RAID,
+    classEdge: edge,
+    wounded,
+    downed,
+    killed,
+    log,
+  };
+
   const claimed: GameState = {
     ...state,
     gold: state.gold + reward,
@@ -855,8 +1264,19 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
     totalRaids: state.totalRaids + 1,
     lunchboxes: state.lunchboxes + 1, // raids drop a lunchbox
     activeRaid: null,
+    raidReport: report,
+    dwellers: state.dwellers
+      .filter((d) => !killedSet.has(d.id))
+      .map((d) => {
+        const p = hpPatch.get(d.id);
+        return p ? { ...d, hp: p.hp, downed: p.downed } : d;
+      }),
   };
-  return applyXp(claimed, squad, XP_RAID);
+  return applyXp(claimed, survivorIds, XP_RAID);
+}
+
+export function clearRaidReport(state: GameState): GameState {
+  return state.raidReport ? { ...state, raidReport: null } : state;
 }
 
 export function raidSquadMight(state: GameState): number {
@@ -910,15 +1330,79 @@ export function descend(state: GameState, now = Date.now()): GameState {
     throw new Error("Not deep enough yet — earn more gold (and beat bosses) before you descend.");
   }
   const fresh = createInitialState(now);
+
+  // Anything bought with real, cross-chain money is a permanent asset — it comes
+  // down into the new stronghold. Reset its transient state (fresh, un-downed,
+  // unassigned) but keep the hero/gear itself.
+  const keptDwellers = state.dwellers
+    .filter((d) => d.onchain)
+    .map((d) => ({ ...d, hp: dwellerMaxHp(d), stamina: MAX_STAMINA, downed: false, roomId: null }));
+  const keptGear = state.gear.filter((g) => g.onchain);
+  // Drop any equip links whose hero/gear didn't survive the descent.
+  const keptDwellerIds = new Set(keptDwellers.map((d) => d.id));
+  const keptGearIds = new Set(keptGear.map((g) => g.id));
+  const dwellers = [...fresh.dwellers, ...keptDwellers].map((d) =>
+    keptDwellerIds.has(d.id)
+      ? {
+          ...d,
+          equipped: {
+            weapon: d.equipped.weapon && keptGearIds.has(d.equipped.weapon) ? d.equipped.weapon : null,
+            armor: d.equipped.armor && keptGearIds.has(d.equipped.armor) ? d.equipped.armor : null,
+            mount: d.equipped.mount && keptGearIds.has(d.equipped.mount) ? d.equipped.mount : null,
+          },
+        }
+      : d,
+  );
+
   return {
     ...fresh,
+    dwellers,
+    gear: keptGear,
     renown: state.renown + gain,
     descents: state.descents + 1,
     // On-chain purchases are permanent — the player paid real, cross-chain money.
     warChestUsd: state.warChestUsd,
     mercenaryBoost: state.mercenaryBoost,
+    warChest: { stored: 0, totalYielded: state.warChest.totalYielded, lastTick: now },
     fundedOnchain: state.fundedOnchain,
     lastFundTxId: state.lastFundTxId,
+    // The login streak is a real-world habit — it shouldn't reset on a descent.
+    daily: state.daily,
+  };
+}
+
+// ---------- daily-login reward (retention ritual) ----------
+
+/** Epoch-day index (local) for a timestamp. */
+function dayIndex(now: number): number {
+  return Math.floor(now / 86_400_000);
+}
+
+/** Is a daily reward available to claim right now? */
+export function dailyAvailable(state: GameState, now = Date.now()): boolean {
+  return dayIndex(now) > state.daily.lastClaimDay;
+}
+
+/** What the next daily claim would pay (streak-scaled). */
+export function dailyReward(state: GameState, now = Date.now()): { gold: number; lunchboxes: number; streak: number } {
+  const today = dayIndex(now);
+  const gap = today - state.daily.lastClaimDay;
+  const streak = state.daily.lastClaimDay > 0 && gap <= DAILY_GRACE_DAYS + 1 ? state.daily.streak + 1 : 1;
+  const gold = DAILY_GOLD_BASE + DAILY_GOLD_PER_STREAK * (streak - 1);
+  const lunchboxes = streak % DAILY_LUNCHBOX_EVERY === 0 ? 1 : 0;
+  return { gold, lunchboxes, streak };
+}
+
+/** Claim the daily reward — bumps the streak, pays gold and (every few days) a crate. */
+export function claimDaily(state: GameState, now = Date.now()): GameState {
+  if (!dailyAvailable(state, now)) throw new Error("Come back tomorrow for the next daily reward.");
+  const { gold, lunchboxes, streak } = dailyReward(state, now);
+  return {
+    ...state,
+    gold: state.gold + gold,
+    totalGoldEarned: state.totalGoldEarned + gold,
+    lunchboxes: state.lunchboxes + lunchboxes,
+    daily: { lastClaimDay: dayIndex(now), streak },
   };
 }
 
@@ -1002,14 +1486,27 @@ export function openLunchbox(state: GameState): { state: GameState; pull: Pull }
 
 // ---------- arena (World Boss) ----------
 
-export type FightResult = { damage: number; killed: boolean; reward: number; bossName: string };
+export type FightResult = {
+  damage: number;
+  killed: boolean;
+  reward: number;
+  bossName: string;
+  classEdge: number; // squad's class multiplier vs. the boss
+  downed: string[]; // fighters the boss knocked out this swing
+};
 
 export function arenaSquad(state: GameState): Dweller[] {
-  return effectiveSquad(state);
+  // rested, un-downed idle heroes — the ones actually able to swing
+  return effectiveSquad(state).filter((d) => d.stamina >= STAMINA_PER_FIGHT);
 }
 
 export function arenaSquadPower(state: GameState): number {
   return squadPower(state, arenaSquad(state));
+}
+
+/** Squad's class multiplier vs. the current boss (shown in the Arena UI). */
+export function arenaClassEdge(state: GameState): number {
+  return squadClassEdge(state, arenaSquad(state), currentBoss(state).enemyClass);
 }
 
 export function currentBoss(state: GameState) {
@@ -1021,12 +1518,14 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
     throw new Error("The legion is regrouping — wait for the cooldown.");
   }
   const squad = arenaSquad(state);
-  if (squad.length === 0) throw new Error("No idle heroes to send to the arena.");
+  if (squad.length === 0) throw new Error("No rested heroes to send — they need stamina (rest in the Hall).");
   const power = arenaSquadPower(state);
   if (power <= 0) throw new Error("Your squad has no might.");
 
   const boss = currentBoss(state);
-  const dmg = Math.floor(power * (0.8 + Math.random() * 0.6));
+  // Class matchup swings the whole hit (melee ▶ ranged ▶ charge ▶ melee).
+  const edge = squadClassEdge(state, squad, boss.enemyClass);
+  const dmg = Math.floor(power * (0.8 + Math.random() * 0.6) * edge);
   const hp = state.arena.bossHp - dmg;
   let arena = { ...state.arena, lastFightAt: now };
   let s: GameState = state;
@@ -1055,10 +1554,35 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
     goldGain = Math.floor(boss.reward * 0.02);
   }
 
-  s = { ...s, arena, gold: s.gold + goldGain, totalGoldEarned: s.totalGoldEarned + goldGain };
+  // The boss bites back: every swing costs stamina and draws blood. A fighter
+  // whose class is countered soaks more — a downing carries them off until healed.
+  const squadIds = new Set(squad.map((d) => d.id));
+  const downed: string[] = [];
+  const dwellers = s.dwellers.map((d) => {
+    if (!squadIds.has(d.id)) return d;
+    const max = dwellerMaxHp(d);
+    const counter = classMultiplierVs(dwellerClass(d), boss.enemyClass);
+    // being countered (counter<1) means you take MORE; countering them takes less
+    const bite = boss.bite * (0.5 + Math.random() * 0.7) * (counter < 1 ? 1.4 : counter > 1 ? 0.7 : 1);
+    const nextHp = Math.max(0, d.hp - bite * max);
+    const stamina = Math.max(0, d.stamina - STAMINA_PER_FIGHT);
+    if (nextHp <= 0) {
+      downed.push(d.name);
+      return { ...d, hp: 0, downed: true, stamina, roomId: null };
+    }
+    return { ...d, hp: nextHp, stamina };
+  });
+  // pull any downed fighters out of rooms (belt-and-suspenders; arena squad is idle)
+  const downNames = new Set(downed);
+  const downIds = new Set(dwellers.filter((d) => d.downed && downNames.has(d.name)).map((d) => d.id));
+  const rooms = downIds.size
+    ? s.rooms.map((r) => ({ ...r, workers: r.workers.filter((w) => !downIds.has(w)) }))
+    : s.rooms;
+
+  s = { ...s, arena, rooms, dwellers, gold: s.gold + goldGain, totalGoldEarned: s.totalGoldEarned + goldGain };
   // The squad bloods itself in the arena — every swing is XP, a kill is a windfall.
   s = applyXp(s, squad.map((d) => d.id), killed ? XP_FIGHT_KILL : XP_FIGHT);
-  return { state: s, result: { damage: dmg, killed, reward: goldGain, bossName: boss.name } };
+  return { state: s, result: { damage: dmg, killed, reward: goldGain, bossName: boss.name, classEdge: edge, downed } };
 }
 
 // ---------- offline earnings (Fix #3) ----------
@@ -1078,6 +1602,7 @@ export function applyOffline(state: GameState, now: number): GameState {
   const stats = deriveStats(state);
   const gold = Math.floor(Math.max(0, stats.goldPerSec) * capped * OFFLINE_EFFICIENCY);
   const provisions = Math.floor(stats.provisionsPerSec * capped * OFFLINE_EFFICIENCY);
+  const salves = Math.floor(Math.max(0, stats.salvesPerSec) * capped * OFFLINE_EFFICIENCY);
 
   // The Great Hall keeps raising recruits while you're away (if fed & housed).
   const hall = state.rooms.find((r) => r.type === "hall");
@@ -1086,18 +1611,29 @@ export function applyOffline(state: GameState, now: number): GameState {
     const space = Math.max(0, maxPopulation(state) - state.dwellers.length);
     recruits = Math.min(space, Math.floor(0.04 * hall.level * capped * OFFLINE_EFFICIENCY));
   }
-  const dwellers = [...state.dwellers];
+  // Everyone rests up while the tab is closed — stamina back to full.
+  const dwellers = state.dwellers.map((d) => ({ ...d, stamina: MAX_STAMINA }));
   for (let i = 0; i < recruits; i++) dwellers.push(makeDweller("recruit"));
+
+  // The vault keeps yielding while you're away (offline efficiency applies).
+  const vaultGold = Math.floor(warChestYield(state) * capped * OFFLINE_EFFICIENCY);
+  const warChest = {
+    ...state.warChest,
+    stored: Math.min(warChestStoreCap(state), state.warChest.stored + vaultGold),
+    lastTick: now,
+  };
 
   return {
     ...state,
     gold: state.gold + gold,
     totalGoldEarned: state.totalGoldEarned + gold,
     provisions: Math.max(0, state.provisions + provisions),
+    salves: state.salves + salves,
     dwellers,
+    warChest,
     // any incident would have been fought off long ago
     incident: state.incident && now >= state.incident.endsAt ? null : state.incident,
-    offlineSummary: { seconds: Math.floor(capped), gold, provisions, recruits },
+    offlineSummary: { seconds: Math.floor(capped), gold, provisions, salves, recruits },
     lastTick: now,
   };
 }
@@ -1138,12 +1674,29 @@ export function loadState(): GameState {
     if (!parsed || !Array.isArray(parsed.rooms) || !Array.isArray(parsed.dwellers)) {
       return createInitialState();
     }
-    // Merge over a fresh state so new fields (squad/renown/…) always exist.
+    // Merge over a fresh state so new fields (squad/renown/warChest/…) always exist.
+    const base = createInitialState();
     const merged: GameState = {
-      ...createInitialState(),
+      ...base,
       ...parsed,
+      // Backfill new dweller stats (hp/stamina) on saves from before they existed.
+      dwellers: parsed.dwellers.map((d) => {
+        const withDefaults = {
+          ...d,
+          stamina: typeof d.stamina === "number" ? d.stamina : MAX_STAMINA,
+          hp: typeof d.hp === "number" ? d.hp : 0,
+        };
+        const max = dwellerMaxHp(withDefaults);
+        return {
+          ...withDefaults,
+          hp: withDefaults.hp > 0 ? Math.min(withDefaults.hp, max) : max,
+        };
+      }),
+      warChest: parsed.warChest ?? base.warChest,
+      daily: parsed.daily ?? base.daily,
       squad: Array.isArray(parsed.squad) ? parsed.squad : [],
       offlineSummary: null,
+      raidReport: null,
       levelUps: [],
     };
     return applyOffline(merged, Date.now());
@@ -1154,8 +1707,8 @@ export function loadState(): GameState {
 
 export function saveState(state: GameState) {
   try {
-    // Never persist one-time UI events (offline report / level-up celebrations).
-    const data = JSON.stringify({ ...state, offlineSummary: null, levelUps: [] });
+    // Never persist one-time UI events (offline report / raid report / level-ups).
+    const data = JSON.stringify({ ...state, offlineSummary: null, raidReport: null, levelUps: [] });
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ sig: signSave(data), data }));
   } catch {
     // storage full / unavailable — ignore
