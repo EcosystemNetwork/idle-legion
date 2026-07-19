@@ -60,8 +60,41 @@ Idle games are one of the highest-retention consumer categories. The monetizatio
 - **Chain abstraction:** `@particle-network/universal-account-sdk` (EIP-7702)
 - **Embedded wallet:** `magic-sdk` (email OTP)
 - **Signing / RPC:** `ethers` v6
-- **Game engine:** pure, deterministic TS module ([`src/game/`](src/game/)) with `localStorage` persistence — no backend
+- **Game engine:** pure, deterministic TS module ([`src/game/`](src/game/)) with `localStorage` as the synchronous fast path
+- **Backend:** InsForge (Postgres + Deno edge functions) for cloud save + **real shared multiplayer** (World Boss, PvP ladder); the game still runs fully offline and falls back to a local simulation when the backend is unreachable
 - **Deploy:** static build → GitHub Pages (keys injected from CI secrets at build time; never committed)
+
+## Game systems (depth beyond the wallet demo)
+
+Idle Legion is a real game. Beyond the base builder, it ships the full retention/economy DNA of its inspirations — **Fallout Shelter**, **Crypto Dynasty**, and **DeFi Kingdoms**:
+
+**Base-builder & RPG depth**
+- **HP / wounds / death** — dwellers can be hurt, **downed**, or lost; incidents draw blood; healing runs on a third resource (**salves**) from a new **Infirmary**.
+- **Stamina** gates raids/arena/duels; rest in the Hall to recover (DFK-style energy).
+- **Gear forge + fusion** — upgrade gear on a rising gold curve, fuse duplicates for levels (the game's core gold sink).
+- **Class triangle** (melee ▶ ranged ▶ charge) — every fighter, boss, raid, and duel has a class; matchup swings damage ±35%.
+- **Raid exploration log** — every raid returns a timestamped after-action report with loot and casualties.
+- **Daily-login streak**, expanded objective treadmill.
+
+**DeFi-Kingdoms economy** — one token, **$LEGION**, ties it together:
+- **Genetic summoning** — heroes carry a dual genome (dominant + recessive genes); breed two parents at the **Summoning Portal** for a new-blood child (genes shuffle, rare traits surface, chance to mutate up a tier), with summon fatigue + charges.
+- **DEX** — a constant-product AMM (gold ⇄ $LEGION) with real price impact.
+- **Bank** — stake $LEGION for real-yield emissions with the DFK anti-mercenary withdrawal-fee decay.
+- **Land / Realm** — scarce, might-gated parcels that yield forever.
+- On **Descend** (prestige), the token economy + ladders persist; land resets with the run.
+
+## Real multiplayer (InsForge)
+
+The two inherently-social systems are **actually networked**, server-authoritative on InsForge — not faked:
+
+| System | Backend | What's shared |
+|---|---|---|
+| **World Boss** | `world-boss` edge function + `world_boss` / `world_boss_contrib` tables | One authoritative boss row. **Every player's damage is durable** and the contribution **leaderboard is real players**; the cycle escalates a tier when the boss falls. |
+| **PvP Duels** | `duel-ladder` edge function + `duel_ladder` table | Each player syncs a fighting snapshot; **your opponents are other real players'** last-synced legions. ELO results sync back to a shared ladder (async PvP, CoC/Fallout-Shelter style). |
+
+- Server code: [`functions/world-boss.ts`](functions/world-boss.ts), [`functions/duel-ladder.ts`](functions/duel-ladder.ts) (Deno, admin-key, RLS-locked tables).
+- Client bridge: [`src/lib/arena.ts`](src/lib/arena.ts) — every call **fails soft**, so with the backend down the UI transparently falls back to the offline simulation (the UI shows a **🟢 LIVE** vs **◍ offline sim** badge so it's always honest).
+- Verified end-to-end: two distinct players share one boss HP and see each other on the board / as duel opponents.
 
 ## Honesty notes
 

@@ -1,49 +1,19 @@
 // ---------------------------------------------------------------------------
-// BossStage — a live, animated Three.js render of the Arena world boss.
+// BossStage — the live, animated Arena world boss, on the shared 3D engine.
 //
-// Built for scale (hundreds of concurrent players): a single ~900KB Draco+WebP
-// GLB (all clips baked onto one skeleton, see scripts/build-boss.mjs) is fetched
-// ONCE per URL and cached as an ArrayBuffer, the self-hosted Draco decoder lives
-// under /draco, the renderer caps its pixel ratio, and the render loop pauses
-// whenever the tab is hidden or the stage scrolls off-screen. All GPU resources
-// are disposed on unmount. The whole module is loaded lazily (React.lazy) so
-// Three.js stays out of the initial bundle.
+// The renderer/scene/camera/loop/disposal boilerplate now lives in three/engine
+// (createStage) and three/loaders (loadGLB) — the same harness the 3D Kingdom
+// runs on. This file keeps only what is boss-specific: cinematic lighting, the
+// contact shadow, camera framing, and the combat → animation state machine.
 //
-// Combat drives the animation state machine:
+// Combat drives the animation:
 //   • hitToken bumps  → play Attack once, then return to Idle (+ a red hit-flash)
 //   • killToken bumps → Dead (hold) → Arise → Idle
 // ---------------------------------------------------------------------------
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-
-const DRACO_PATH = `${import.meta.env.BASE_URL}draco/`;
-
-// --- One shared fetch per URL, one shared loader per session. ---------------
-const glbCache = new Map<string, Promise<ArrayBuffer>>();
-function fetchGLB(url: string): Promise<ArrayBuffer> {
-  let p = glbCache.get(url);
-  if (!p) {
-    p = fetch(url).then((r) => {
-      if (!r.ok) throw new Error(`boss model ${r.status}`);
-      return r.arrayBuffer();
-    });
-    // Drop failed fetches from the cache so a later mount can retry.
-    p.catch(() => glbCache.delete(url));
-    glbCache.set(url, p);
-  }
-  return p;
-}
-
-let _loader: GLTFLoader | null = null;
-function getLoader(): GLTFLoader {
-  if (_loader) return _loader;
-  const draco = new DRACOLoader().setDecoderPath(DRACO_PATH);
-  _loader = new GLTFLoader().setDRACOLoader(draco);
-  return _loader;
-}
+import { createStage, webglAvailable } from "../three/engine";
+import { disposeMaterial, loadGLB } from "../three/loaders";
 
 interface BossStageProps {
   modelUrl: string;
@@ -65,34 +35,20 @@ interface BossCtrl {
 export default function BossStage({ modelUrl, poster, hitToken, killToken, className }: BossStageProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const ctrlRef = useRef<BossCtrl | null>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(() =>
+    webglAvailable() ? "loading" : "error",
+  );
 
   // --- Scene lifecycle: set up once per model, tear down on unmount. --------
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
+    if (!host || !webglAvailable()) return;
 
     let disposed = false;
     setStatus("loading");
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(host.clientWidth || 1, host.clientHeight || 1, false);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    const canvas = renderer.domElement;
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
-    canvas.style.display = "block";
-    host.appendChild(canvas);
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
-
-    // Soft studio reflections without shipping an HDR — generated from RoomEnvironment.
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const stage = createStage(host, { fov: 38, far: 100, exposure: 1.15, envRoughness: 0.04 });
+    const { scene, camera } = stage;
 
     // Cinematic three-point-ish lighting tuned to the game's dark-vibrant theme.
     scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x1a1020, 0.55));
@@ -106,13 +62,10 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
     fill.position.set(-2, 0.5, 2);
     scene.add(fill);
 
-    // Fake soft contact shadow (a radial-gradient sprite) — no shadow maps needed.
-    scene.add(makeContactShadow());
+    const contact = makeContactShadow();
+    scene.add(contact);
 
     const mixer = new THREE.AnimationMixer(scene);
-    const clock = new THREE.Clock();
-    let raf = 0;
-    let running = false;
     let root: THREE.Object3D | null = null;
     let hitFlash = 0; // 0..1, decays each frame
     let flashMat: THREE.MeshStandardMaterial | null = null;
@@ -121,10 +74,10 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
     const actions = new Map<string, THREE.AnimationAction>();
     let current: THREE.AnimationAction | null = null;
 
-    function play(name: string, opts: { loop?: boolean; clamp?: boolean; fade?: number } = {}) {
+    function play(name: string, o: { loop?: boolean; clamp?: boolean; fade?: number } = {}) {
       const next = actions.get(name);
       if (!next) return null;
-      const { loop = true, clamp = false, fade = 0.25 } = opts;
+      const { loop = true, clamp = false, fade = 0.25 } = o;
       next.reset();
       next.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
       next.clampWhenFinished = clamp;
@@ -149,7 +102,6 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
       const box = new THREE.Box3().setFromObject(obj);
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
-      // Drop feet to y=0, recenter horizontally.
       obj.position.x -= center.x;
       obj.position.z -= center.z;
       obj.position.y -= box.min.y;
@@ -162,114 +114,63 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
       camera.updateProjectionMatrix();
     }
 
-    function renderFrame() {
-      const dt = Math.min(clock.getDelta(), 0.05);
+    // Per-frame: animation + turntable sway + hit-flash decay.
+    const unsub = stage.onFrame((dt) => {
       mixer.update(dt);
-      if (root) {
-        // Gentle turntable sway for presence; eased, never dizzying.
-        root.rotation.y += dt * 0.25;
-      }
+      if (root) root.rotation.y += dt * 0.25;
       if (hitFlash > 0 && flashMat && baseEmissive) {
         hitFlash = Math.max(0, hitFlash - dt * 3);
         flashMat.emissive.copy(baseEmissive).lerp(new THREE.Color(0xff2a1a), hitFlash);
         flashMat.emissiveIntensity = 1 + hitFlash * 2.5;
       }
-      renderer.render(scene, camera);
-    }
-
-    function loop() {
-      raf = requestAnimationFrame(loop);
-      renderFrame();
-    }
-    function start() {
-      if (running || disposed) return;
-      running = true;
-      clock.getDelta(); // discard the gap so animation doesn't jump
-      raf = requestAnimationFrame(loop);
-    }
-    function stop() {
-      running = false;
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
-    }
-
-    // --- Pause when hidden or scrolled off-screen. --------------------------
-    const onScreen = { value: true };
-    function maybeStart() {
-      if (!document.hidden && onScreen.value) start();
-      else stop();
-    }
-    const onVisibility = () => maybeStart();
-    const io = new IntersectionObserver(
-      ([e]) => { onScreen.value = e.isIntersecting; maybeStart(); },
-      { threshold: 0.01 },
-    );
-    document.addEventListener("visibilitychange", onVisibility);
-    io.observe(host);
-
-    // --- Resize with the container. ----------------------------------------
-    const ro = new ResizeObserver(() => {
-      const w = host.clientWidth || 1;
-      const h = host.clientHeight || 1;
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
     });
-    ro.observe(host);
 
     // --- Load the model. ---------------------------------------------------
-    fetchGLB(modelUrl)
-      .then((buf) => {
+    loadGLB(modelUrl)
+      .then(({ scene: model, animations }) => {
         if (disposed) return;
-        // Copy the buffer: the Draco worker transfers (detaches) what it parses.
-        getLoader().parse(buf.slice(0), "", (gltf) => {
-          if (disposed) return;
-          root = gltf.scene;
-          root.traverse((o) => {
-            const mesh = o as THREE.Mesh;
-            if (mesh.isMesh) {
-              mesh.frustumCulled = false; // skinned bounds are unreliable; keep it drawn
-              const mat = mesh.material as THREE.MeshStandardMaterial;
-              if (mat && !flashMat) {
-                flashMat = mat;
-                baseEmissive = mat.emissive.clone();
-              }
+        root = model;
+        root.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (mesh.isMesh) {
+            mesh.frustumCulled = false; // skinned bounds are unreliable; keep drawn
+            const mat = mesh.material as THREE.MeshStandardMaterial;
+            if (mat && !flashMat) {
+              flashMat = mat;
+              baseEmissive = mat.emissive.clone();
             }
-          });
-          scene.add(root);
-          frameModel(root);
-
-          for (const clip of gltf.animations) actions.set(clip.name, mixer.clipAction(clip));
-          play("Idle", { fade: 0 });
-
-          setStatus("ready");
-          const deadDur = actions.get("Dead")?.getClip().duration ?? 1.6;
-          ctrlRef.current = {
-            attack: () => { play("Attack", { loop: false, clamp: false }); hitFlash = 1; },
-            die: () => {
-              play("Dead", { loop: false, clamp: true, fade: 0.2 });
-              // Once the death beat has fully played, rise again (boss respawns tougher).
-              window.setTimeout(() => { if (!disposed) play("Arise", { loop: false }); }, deadDur * 1000 + 500);
-            },
-          };
-          maybeStart();
-        }, (err) => {
-          console.error("[BossStage] parse failed", err);
-          if (!disposed) setStatus("error");
+          }
         });
+        scene.add(root);
+        frameModel(root);
+
+        for (const clip of animations) actions.set(clip.name, mixer.clipAction(clip));
+        play("Idle", { fade: 0 });
+
+        setStatus("ready");
+        const deadDur = actions.get("Dead")?.getClip().duration ?? 1.6;
+        ctrlRef.current = {
+          attack: () => {
+            play("Attack", { loop: false, clamp: false });
+            hitFlash = 1;
+          },
+          die: () => {
+            play("Dead", { loop: false, clamp: true, fade: 0.2 });
+            window.setTimeout(() => {
+              if (!disposed) play("Arise", { loop: false });
+            }, deadDur * 1000 + 500);
+          },
+        };
       })
       .catch((err) => {
-        console.error("[BossStage] fetch failed", err);
+        console.error("[BossStage] load failed", err);
         if (!disposed) setStatus("error");
       });
 
     // --- Teardown. ---------------------------------------------------------
     return () => {
       disposed = true;
-      stop();
-      document.removeEventListener("visibilitychange", onVisibility);
-      io.disconnect();
-      ro.disconnect();
+      unsub();
       mixer.stopAllAction();
       mixer.uncacheRoot(scene);
       ctrlRef.current = null;
@@ -278,15 +179,11 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
         if (mesh.isMesh) {
           mesh.geometry?.dispose();
           const m = mesh.material;
-          if (Array.isArray(m)) m.forEach((mm) => disposeMaterial(mm));
+          if (Array.isArray(m)) m.forEach(disposeMaterial);
           else if (m) disposeMaterial(m);
         }
       });
-      scene.environment?.dispose();
-      pmrem.dispose();
-      renderer.dispose();
-      renderer.forceContextLoss();
-      canvas.remove();
+      stage.dispose();
     };
     // Re-init only when the model source changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -295,13 +192,19 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
   // --- Combat → animation. Skip the initial mount so we start on Idle. ------
   const firstHit = useRef(true);
   useEffect(() => {
-    if (firstHit.current) { firstHit.current = false; return; }
+    if (firstHit.current) {
+      firstHit.current = false;
+      return;
+    }
     ctrlRef.current?.attack();
   }, [hitToken]);
 
   const firstKill = useRef(true);
   useEffect(() => {
-    if (firstKill.current) { firstKill.current = false; return; }
+    if (firstKill.current) {
+      firstKill.current = false;
+      return;
+    }
     ctrlRef.current?.die();
   }, [killToken]);
 
@@ -316,16 +219,6 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
 }
 
 // --- helpers ---------------------------------------------------------------
-
-function disposeMaterial(m: THREE.Material) {
-  const mat = m as THREE.MeshStandardMaterial;
-  mat.map?.dispose();
-  mat.normalMap?.dispose();
-  mat.roughnessMap?.dispose();
-  mat.metalnessMap?.dispose();
-  mat.emissiveMap?.dispose();
-  m.dispose();
-}
 
 /** A cheap soft ground shadow: a radial-gradient texture on a floor plane. */
 function makeContactShadow(): THREE.Mesh {

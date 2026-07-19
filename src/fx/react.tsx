@@ -1,7 +1,9 @@
-// React glue for the juice engine: animated count-up, a floating mute toggle,
-// delegated UI click sounds, and tab-title idle-earnings ticker.
+// React glue for the juice engine: animated count-up hook, delegated UI click
+// sounds, and tab-title idle-earnings ticker. Hooks only — the MuteButton
+// component lives in ./MuteButton so this module doesn't trip Fast Refresh's
+// "only export components" rule.
 import { useEffect, useRef, useState } from "react";
-import { isMuted, sfx, toggleMute } from "./juice";
+import { sfx } from "./juice";
 
 /** Smoothly rolls a displayed number toward its target (spring-ish ease-out). */
 export function useCountUp(target: number, ms = 450): number {
@@ -34,26 +36,6 @@ export function useCountUp(target: number, ms = 450): number {
   }, [target, ms]);
 
   return display;
-}
-
-/** Floating mute toggle, bottom-right. */
-export function MuteButton() {
-  const [m, setM] = useState(isMuted());
-  return (
-    <button
-      type="button"
-      className="fx-mute"
-      title={m ? "Sound off" : "Sound on"}
-      aria-label={m ? "Unmute" : "Mute"}
-      onClick={() => {
-        const now = toggleMute();
-        setM(now);
-        if (!now) sfx.click();
-      }}
-    >
-      {m ? "🔇" : "🔊"}
-    </button>
-  );
 }
 
 /** Delegated soft click sounds on buttons — one listener, no per-button wiring. */

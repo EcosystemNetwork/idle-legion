@@ -2011,12 +2011,19 @@ export function pvpOpponents(state: GameState): PvpOpponent[] {
 }
 
 /** Resolve a duel vs a chosen opponent — ELO update + rewards, daily-gated. */
-export function duel(state: GameState, oppId: number, now = Date.now()): GameState {
+/** An explicit duel opponent — either a simulated one or a real player from the ladder. */
+export type DuelOpponent = {
+  name: string;
+  rating: number;
+  power: number;
+  combatClass: CombatClass;
+};
+
+/** Resolve a duel against an explicit opponent (shared by sim + real-ladder duels). */
+export function duelAgainst(state: GameState, opp: DuelOpponent, now = Date.now()): GameState {
   if (state.pvp.attacksLeft <= 0) throw new Error("Out of duels today — they refresh tomorrow.");
   const squad = arenaSquad(state);
   if (squad.length === 0) throw new Error("No rested heroes to duel with.");
-  const opp = pvpOpponents(state).find((o) => o.id === oppId);
-  if (!opp) throw new Error("That challenger has left the sands.");
 
   const myPower = squadPower(state, squad);
   const edge = squadClassEdge(state, squad, opp.combatClass);
@@ -2024,7 +2031,6 @@ export function duel(state: GameState, oppId: number, now = Date.now()): GameSta
   const oppScore = opp.power * (0.85 + Math.random() * 0.3);
   const won = myScore >= oppScore;
 
-  // ELO
   const expected = 1 / (1 + Math.pow(10, (opp.rating - state.pvp.rating) / 400));
   const delta = Math.round(PVP_K * ((won ? 1 : 0) - expected));
   const rating = Math.max(600, state.pvp.rating + delta);
@@ -2058,7 +2064,6 @@ export function duel(state: GameState, oppId: number, now = Date.now()): GameSta
       lastResult: result,
     },
   };
-  // A hard-fought duel tires the squad a little.
   const ids = new Set(squad.map((d) => d.id));
   next = {
     ...next,
@@ -2069,6 +2074,15 @@ export function duel(state: GameState, oppId: number, now = Date.now()): GameSta
   next = applyXp(next, squad.map((d) => d.id), won ? XP_FIGHT_KILL : XP_FIGHT);
   void now;
   return next;
+}
+
+export function duel(state: GameState, oppId: number, now = Date.now()): GameState {
+  if (state.pvp.attacksLeft <= 0) throw new Error("Out of duels today — they refresh tomorrow.");
+  const squad = arenaSquad(state);
+  if (squad.length === 0) throw new Error("No rested heroes to duel with.");
+  const opp = pvpOpponents(state).find((o) => o.id === oppId);
+  if (!opp) throw new Error("That challenger has left the sands.");
+  return duelAgainst(state, opp, now);
 }
 
 export function clearDuelResult(state: GameState): GameState {

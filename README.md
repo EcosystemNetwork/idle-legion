@@ -32,6 +32,27 @@ The old world ran on the shining **Chains**, linked by **Bridges**. Someone pull
 - **🗺️ Raids** — send idle squads topside into the Wastes on timed raids for gold and a guaranteed lunchbox. Bigger might → bigger prize.
 - **🏛️ Marketplace** — the on-chain Bazaar. Buy grail gladiators and gear with USDT settled cross-chain via Universal Accounts, and sell spare assets back for gold. Fund the **War Chest** to hire a **Free Company** — a permanent production multiplier on every room.
 
+## Systems (the full game, not just a wallet demo)
+
+Idle Legion ships the retention/economy DNA of **Fallout Shelter**, **Crypto Dynasty**, and **DeFi Kingdoms**:
+
+- **Survival stakes** — dwellers have **HP**; incidents wound them, a raid can **down or kill** a fighter, and healing spends **salves** from the **Infirmary** (a third resource with its own failure state). **Stamina** gates every fight (rest in the Hall to recover).
+- **Gear economy** — **forge** gear up a rising gold curve and **fuse** duplicates for levels (the core gold sink).
+- **Class triangle** — melee ▶ ranged ▶ charge. Every fighter, boss, raid, and duel has a class; matchup swings damage ±35%.
+- **Raid log** — each raid returns a timestamped after-action report (loot, wounds, losses).
+- **$LEGION economy** — a real **DEX** (constant-product AMM, gold ⇄ $LEGION), a **Bank** (stake for real-yield with an anti-mercenary withdrawal-fee decay), and **Land** (scarce, might-gated parcels that yield forever).
+- **Genetic summoning** — heroes carry a **dual genome** (dominant + recessive genes); breed two at the **Summoning Portal** for a new-blood child — genes shuffle, rare traits surface, tiers can mutate up, and parents fatigue.
+- **Daily-login streak** + an expanded objective treadmill.
+
+### 🐉 Real multiplayer (World Boss + Duels)
+
+Two systems are **actually networked** on **InsForge** (Postgres + Deno edge functions), server-authoritative:
+
+- **World Boss** — one shared boss; **every player's damage is durable** and the leaderboard is **real players**. It escalates a tier each time the realm fells it.
+- **PvP Duels** — an **async ELO ladder** where your opponents are **other real players'** synced legions; your results sync back to the shared board.
+
+Both **degrade gracefully**: the game runs fully offline, and when the backend is unreachable the UI falls back to a local simulation (a **🟢 LIVE** / **◍ offline sim** badge always tells you which). Server code lives in [`functions/`](functions/); the client bridge is [`src/lib/arena.ts`](src/lib/arena.ts).
+
 ## Quick start
 
 ```bash

@@ -4,10 +4,13 @@ import "@google/model-viewer";
 // Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
 // initial bundle and only loads when a player opens the Arena on a 3D boss.
 const BossStage = lazy(() => import("./components/BossStage"));
+// The 3D Underground Kingdom (flagship scene) — code-split like the boss viewer.
+const GameWorld = lazy(() => import("./components/GameWorld"));
 // Dev/admin "see everything" overlay — code-split so it never ships in the main view.
 const AdminPanel = lazy(() => import("./components/AdminPanel"));
 import KingdomMap from "./components/KingdomMap";
 import { INTERIOR } from "./game/interiors";
+import { RoomFrog } from "./components/RoomScene";
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
@@ -132,11 +135,20 @@ import {
   MIRROR_STREAK_DAY,
   SCRYING_MIRROR_SUPPLY,
 } from "./game/streak";
+import { operatorId } from "./lib/insforge";
+import {
+  ARENA_ONLINE,
+  fetchWorldBoss,
+  strikeWorldBoss,
+  syncLadder,
+  type LadderOpponent,
+  type WbState,
+} from "./lib/arena";
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
 import { MuteButton } from "./fx/MuteButton";
-import { flush, identify, initTelemetry, markLogin } from "./lib/telemetry";
+import { flush, identify, initTelemetry, markLogin, setScreen } from "./lib/telemetry";
 
 const GOLD_CHIP = ".chip-stat.gold";
 
@@ -296,6 +308,11 @@ export default function App() {
     initTelemetry();
     return () => void flush(true);
   }, []);
+
+  // Report per-screen dwell time as the player switches tabs.
+  useEffect(() => {
+    setScreen(tab);
+  }, [tab]);
 
   // Report identity + fire a one-time login event when the wallet connects.
   // Also repoint cloud saves at the player's identity so progress roams across
@@ -506,7 +523,15 @@ export default function App() {
         </div>
       )}
 
-      {tab === "kingdom" && <KingdomMap onEnter={(id) => setTab(id as Tab)} />}
+      {tab === "kingdom" && (
+        <Suspense fallback={<KingdomMap onEnter={(id) => setTab(id as Tab)} />}>
+          <GameWorld
+            onEnter={(id) => setTab(id as Tab)}
+            dwellers={state.dwellers.length}
+            fallback={<KingdomMap onEnter={(id) => setTab(id as Tab)} />}
+          />
+        </Suspense>
+      )}
 
       {tab === "stronghold" && (
         <StrongholdView
@@ -1449,6 +1474,14 @@ function Chamber({
         </div>
       ) : (
         <div className="ch-stage">
+          {workers.length > 0 && (
+            <div className="ch-worker">
+              <RoomFrog anim="Boxing_Practice" size={130} />
+            </div>
+          )}
+          <span className="ch-mood" aria-hidden>
+            {incident ? "😡" : !stats.fed ? "😣" : ready || rate > 0 ? "😄" : "🙂"}
+          </span>
           <div className="crew">
             {workers.map((d) => (
               <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
@@ -2457,35 +2490,69 @@ function SummoningPanel({ state, actions }: { state: GameState; actions: Actions
 
 // ---------------- World Boss (shared co-op + leaderboard) ----------------
 
+/** A stable, human display name for this device's legion on the shared boards. */
+function legionName(): string {
+  return `Legion ${operatorId().slice(-4).toUpperCase()}`;
+}
+
 function WorldBossView({ game }: { game: Game }) {
   const { state, now, actions } = game;
   const wb = state.worldBoss;
   const [flash, setFlash] = useState<string | null>(null);
-  const board = worldBossLeaderboard(state);
-  const rank = worldBossRank(state);
-  const hpFracB = wb.maxHp > 0 ? Math.max(0, wb.hp) / wb.maxHp : 0;
-  const cd = Math.max(0, WB_HIT_COOLDOWN_MS - (now - wb.lastHitAt));
-  const bossClass: CombatClass = (["melee", "ranged", "charge"] as CombatClass[])[(wb.tier - 1) % 3];
+  // Live server boss (real shared HP + real leaderboard). null → offline fallback.
+  const [srv, setSrv] = useState<WbState | null>(null);
+  const online = srv != null;
+
+  // Poll the shared boss while this tab is open.
+  useEffect(() => {
+    if (!ARENA_ONLINE) return;
+    let alive = true;
+    const pull = () => { void fetchWorldBoss(legionName()).then((r) => { if (alive && r) setSrv(r); }); };
+    pull();
+    const id = window.setInterval(pull, 6000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+
+  const bossClass: CombatClass = (["melee", "ranged", "charge"] as CombatClass[])[((online ? srv!.boss.tier : wb.tier) - 1) % 3];
   const squad = arenaSquad(state);
-  const daysLeft = Math.max(0, (wb.endsAt - now) / 86_400_000);
+  const cd = Math.max(0, WB_HIT_COOLDOWN_MS - (now - wb.lastHitAt));
+
+  // Displayed boss/board come from the server when live, else the local sim.
+  const dispHp = online ? srv!.boss.hp : Math.max(0, wb.hp);
+  const dispMax = online ? srv!.boss.maxHp : wb.maxHp;
+  const dispTier = online ? srv!.boss.tier : wb.tier;
+  const dispEndsAt = online ? srv!.boss.endsAt : wb.endsAt;
+  const board = online ? srv!.leaderboard : worldBossLeaderboard(state);
+  const rank = online ? (srv!.you.rank ?? board.length) : worldBossRank(state);
+  const myContribution = online ? srv!.you.contributed : wb.contributed;
+  const hpFracB = dispMax > 0 ? Math.max(0, dispHp) / dispMax : 0;
+  const daysLeft = Math.max(0, (dispEndsAt - now) / 86_400_000);
 
   const onHit = () => {
+    // Local engine handles the economy (stamina/XP/local rewards + cooldown).
     const hit = game.hitWorldBoss();
     if (!hit) { sfx.error(); return; }
     const c = centerOf(document.querySelector(".wb-stage"));
     shake(hit.killed ? 16 : 6);
     burst(c.x, c.y, { color: hit.killed ? "#ff7a3d" : "#ffd76b", count: hit.killed ? 40 : 16, kind: "spark", power: hit.killed ? 9 : 5 });
     floatText(c.x, c.y - 10, `-${formatNum(hit.damage)}`, { color: "#ffd76b", crit: hit.killed });
-    setFlash(hit.killed ? `💥 ${worldBossName(state)} FELLED! Cycle payout ↓` : `Struck for ${formatNum(hit.damage)}!`);
-    if (hit.killed) sfx.boom();
-    else sfx.hit();
+    setFlash(`Struck for ${formatNum(hit.damage)}!`);
+    if (hit.killed) sfx.boom(); else sfx.hit();
+    // In LIVE mode, the same damage lands on the real shared boss.
+    if (ARENA_ONLINE) {
+      void strikeWorldBoss(legionName(), hit.damage).then((r) => {
+        if (!r) return;
+        setSrv(r);
+        if (r.resolved) setFlash(`💥 The realm felled the boss! You placed #${r.resolved.rank} of ${r.resolved.field}.`);
+      });
+    }
   };
 
   return (
     <section className="panel worldboss">
       <div className="panel-head">
-        <h2>🐉 World Boss · shared raid</h2>
-        <div className="rank-chip">🏆 Rank #{rank} / {board.length} · tier {wb.tier}</div>
+        <h2>🐉 World Boss · shared raid {online ? <span className="live-badge">🟢 LIVE</span> : <span className="sim-badge">◍ offline sim</span>}</h2>
+        <div className="rank-chip">🏆 Rank #{rank} / {board.length} · tier {dispTier}</div>
       </div>
 
       {wb.lastReward && (
@@ -2503,10 +2570,10 @@ function WorldBossView({ game }: { game: Game }) {
           <div className="boss-name">{worldBossName(state)} <ClassBadge cls={bossClass} small /></div>
           <div className="boss-hpbar wb">
             <i style={{ width: `${hpFracB * 100}%` }} />
-            <b>{formatNum(Math.max(0, wb.hp))} / {formatNum(wb.maxHp)} HP</b>
+            <b>{formatNum(Math.max(0, dispHp))} / {formatNum(dispMax)} HP</b>
           </div>
           {flash && <div className="boss-flash">{flash}</div>}
-          <div className="muted small">Cycle ends in {daysLeft.toFixed(1)}d · your damage {formatNum(wb.contributed)}</div>
+          <div className="muted small">Cycle ends in {daysLeft.toFixed(1)}d · your damage {formatNum(myContribution)}</div>
         </div>
       </div>
 
@@ -2516,22 +2583,27 @@ function WorldBossView({ game }: { game: Game }) {
           <div className="arena-controls">
             <div className="squad-info">
               <div className="squad-power">Squad <b>{Math.floor(arenaSquadPower(state))} ⚔</b></div>
-              <span className="muted small">Counter {CLASS_LABEL[bossClass]}; rivals chip the boss down 24/7 — climb the board before it dies.</span>
+              <span className="muted small">
+                {online
+                  ? "Real legions share this boss — every strike is durable on-chain-of-record. Climb the live board before someone else lands the kill."
+                  : `Counter ${CLASS_LABEL[bossClass]}; rivals chip the boss 24/7. (Backend offline — showing simulated rivals.)`}
+              </span>
             </div>
-            <button type="button" className="btn big" disabled={cd > 0 || squad.length === 0 || wb.hp <= 0} onClick={onHit}>
+            <button type="button" className="btn big" disabled={cd > 0 || squad.length === 0 || dispHp <= 0} onClick={onHit}>
               {cd > 0 ? `Rallying ${Math.ceil(cd / 1000)}s` : "🗡️ STRIKE"}
             </button>
           </div>
         </div>
         <div className="wb-board">
-          <h4 className="ml">Contribution leaderboard <span className="muted small">(simulated rivals)</span></h4>
+          <h4 className="ml">Contribution leaderboard <span className="muted small">{online ? "(real players)" : "(simulated rivals)"}</span></h4>
           {board.map((row, i) => (
-            <div key={row.name} className={`wb-row ${row.isYou ? "you" : ""}`}>
+            <div key={`${row.name}-${i}`} className={`wb-row ${row.isYou ? "you" : ""}`}>
               <span className="wb-rank">#{i + 1}</span>
               <span className="wb-name">{row.isYou ? "⭐ " : ""}{row.name}</span>
               <span className="wb-dmg">{formatNum(row.contributed)}</span>
             </div>
           ))}
+          {board.length === 0 && <p className="muted small">Be the first to strike this cycle.</p>}
         </div>
       </div>
     </section>
@@ -2542,14 +2614,34 @@ function WorldBossView({ game }: { game: Game }) {
 
 function DuelsView({ state, actions }: { state: GameState; actions: Actions }) {
   const pvp = state.pvp;
-  const opps = pvpOpponents(state);
   const myPower = Math.floor(arenaSquadPower(state));
   const res = pvp.lastResult;
+  const squadArr = arenaSquad(state);
+  const myClass: CombatClass = squadArr.length
+    ? dwellerClass([...squadArr].sort((a, b) => dwellerMight(b, state) - dwellerMight(a, state))[0])
+    : "melee";
+
+  // Real opponents from the shared ladder (other players). null → offline sim.
+  const [srv, setSrv] = useState<{ opponents: LadderOpponent[]; rank: number; field: number } | null>(null);
+  const online = srv != null && srv.opponents.length > 0;
+
+  // Push my snapshot + pull real opponents; re-sync after each duel (rating moves).
+  useEffect(() => {
+    if (!ARENA_ONLINE) return;
+    let alive = true;
+    void syncLadder({ name: legionName(), rating: Math.round(pvp.rating), power: myPower, combatClass: myClass, wins: pvp.wins, losses: pvp.losses })
+      .then((r) => { if (alive && r) setSrv(r); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pvp.wins, pvp.losses, pvp.rating]);
+
+  const simOpps = pvpOpponents(state);
+
   return (
     <section className="panel duels">
       <div className="panel-head">
-        <h2>🏟️ Duels · ranked ladder <span className="muted small">(simulated)</span></h2>
-        <div className="rank-chip">🎖️ {pvpRankName(pvp.rating)} · {Math.round(pvp.rating)}</div>
+        <h2>🏟️ Duels · ranked ladder {online ? <span className="live-badge">🟢 LIVE</span> : <span className="sim-badge">◍ offline sim</span>}</h2>
+        <div className="rank-chip">🎖️ {pvpRankName(pvp.rating)} · {Math.round(pvp.rating)}{online ? ` · #${srv!.rank}/${srv!.field}` : ""}</div>
       </div>
 
       <div className="pvp-stats">
@@ -2574,27 +2666,53 @@ function DuelsView({ state, actions }: { state: GameState; actions: Actions }) {
       <SquadPicker state={state} actions={actions} />
 
       <div className="duel-grid">
-        {opps.map((o) => {
-          const edge = classEdgeVerdict(squadClassEdge(state, arenaSquad(state), o.combatClass));
-          return (
-            <article key={o.id} className="duel-card">
-              <div className="dc-head">
-                <span className="dc-name">{o.name}</span>
-                <ClassBadge cls={o.combatClass} small />
-              </div>
-              <div className="dc-meta">
-                <span>🎖️ {o.rating}</span>
-                <span>{o.power} ⚔</span>
-                <span className={`edge-tag ${edge.cls}`}>{edge.txt}</span>
-              </div>
-              <button type="button" className="btn" disabled={pvp.attacksLeft <= 0 || arenaSquad(state).length === 0} onClick={() => actions.duel(o.id)}>
-                {pvp.attacksLeft <= 0 ? "No duels left" : "⚔ Challenge"}
-              </button>
-            </article>
-          );
-        })}
+        {online
+          ? srv!.opponents.map((o) => {
+              const edge = classEdgeVerdict(squadClassEdge(state, arenaSquad(state), o.combatClass));
+              return (
+                <article key={o.playerKey} className="duel-card real">
+                  <div className="dc-head">
+                    <span className="dc-name">🌐 {o.name}</span>
+                    <ClassBadge cls={o.combatClass} small />
+                  </div>
+                  <div className="dc-meta">
+                    <span>🎖️ {o.rating}</span>
+                    <span>{o.power} ⚔</span>
+                    <span>{o.wins}W/{o.losses}L</span>
+                    <span className={`edge-tag ${edge.cls}`}>{edge.txt}</span>
+                  </div>
+                  <button type="button" className="btn" disabled={pvp.attacksLeft <= 0 || squadArr.length === 0}
+                    onClick={() => actions.duelReal({ name: o.name, rating: o.rating, power: o.power, combatClass: o.combatClass })}>
+                    {pvp.attacksLeft <= 0 ? "No duels left" : "⚔ Challenge"}
+                  </button>
+                </article>
+              );
+            })
+          : simOpps.map((o) => {
+              const edge = classEdgeVerdict(squadClassEdge(state, arenaSquad(state), o.combatClass));
+              return (
+                <article key={o.id} className="duel-card">
+                  <div className="dc-head">
+                    <span className="dc-name">{o.name}</span>
+                    <ClassBadge cls={o.combatClass} small />
+                  </div>
+                  <div className="dc-meta">
+                    <span>🎖️ {o.rating}</span>
+                    <span>{o.power} ⚔</span>
+                    <span className={`edge-tag ${edge.cls}`}>{edge.txt}</span>
+                  </div>
+                  <button type="button" className="btn" disabled={pvp.attacksLeft <= 0 || squadArr.length === 0} onClick={() => actions.duel(o.id)}>
+                    {pvp.attacksLeft <= 0 ? "No duels left" : "⚔ Challenge"}
+                  </button>
+                </article>
+              );
+            })}
       </div>
-      <p className="muted small">Win probability follows an ELO curve — beating a higher-rated legion pays more rating &amp; gold. Class matchup swings the fight. Duels refresh daily.</p>
+      <p className="muted small">
+        {online
+          ? "🌐 These are REAL rival legions pulled from the shared ladder — beating a higher-rated player pays more rating & gold (ELO). Your result syncs back to the global board."
+          : "Win probability follows an ELO curve; class matchup swings the fight. Duels refresh daily. (Backend offline — showing simulated opponents.)"}
+      </p>
     </section>
   );
 }

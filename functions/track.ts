@@ -144,5 +144,24 @@ export default async function (req: Request): Promise<Response> {
     if (evErr) return json({ error: "event insert failed", detail: evErr.message }, 500);
   }
 
+  // Accumulate per-screen dwell time (ms map -> seconds, incremented).
+  const screens = body.screens && typeof body.screens === "object" ? body.screens : {};
+  const screenNames = Object.keys(screens).slice(0, 24);
+  if (screenNames.length) {
+    const { data: existing = [] } = await admin.database
+      .from("analytics_screen_time").select("screen,seconds").eq("session_id", sessionId);
+    const prev = new Map((existing as any[]).map((r) => [r.screen, r.seconds]));
+    const rows = screenNames.map((screen) => {
+      const addSec = Math.min(3600, Math.max(0, Number(screens[screen]) / 1000 || 0));
+      return {
+        session_id: sessionId,
+        screen: String(screen).slice(0, 40),
+        seconds: (prev.get(screen) ?? 0) + addSec,
+        updated_at: nowIso,
+      };
+    });
+    await admin.database.from("analytics_screen_time").upsert(rows, { onConflict: "session_id,screen" });
+  }
+
   return json({ ok: true, ingested: events.length, geo: geo ? `${geo.city ?? "?"}, ${geo.country ?? "?"}` : null });
 }

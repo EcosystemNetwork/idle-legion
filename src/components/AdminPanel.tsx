@@ -109,7 +109,10 @@ function NumField({
 }
 
 const ADMIN_TOKEN_KEY = "idle-legion-admin-token";
-type DashTab = "overview" | "players" | "live" | "geo";
+type DashTab = "overview" | "players" | "live" | "geo" | "insights";
+const SCREEN_ICON: Record<string, string> = {
+  stronghold: "🏰", legion: "🛡️", arena: "⚔️", raids: "🗺️", market: "🏛️", codex: "📜",
+};
 
 const rel = (iso: string | null | undefined) => {
   if (!iso) return "—";
@@ -328,9 +331,9 @@ function TelemetrySection() {
 
           {/* dashboard tabs */}
           <div className="adm-dtabs">
-            {(["overview", "players", "live", "geo"] as DashTab[]).map((t) => (
+            {(["overview", "players", "live", "geo", "insights"] as DashTab[]).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
-                {t === "overview" ? "📊 Overview" : t === "players" ? `👤 Players` : t === "live" ? "⏱ Live" : "🌍 Geo"}
+                {t === "overview" ? "📊 Overview" : t === "players" ? `👤 Players` : t === "live" ? "⏱ Live" : t === "geo" ? "🌍 Geo" : "📈 Insights"}
               </button>
             ))}
             <span className="adm-updated">updated {rel(data.generatedAt)}</span>
@@ -438,6 +441,60 @@ function TelemetrySection() {
               />
             </>
           )}
+
+          {tab === "insights" && (
+            <>
+              <h5 className="adm-h5">Conversion funnel</h5>
+              <div className="adm-funnel">
+                {data.funnel.map((f, i) => {
+                  const prev = i > 0 ? data.funnel[i - 1].count : f.count;
+                  const conv = prev > 0 ? Math.round((f.count / prev) * 100) : 0;
+                  return (
+                    <div key={f.key} className="adm-funnel-step">
+                      <div className="adm-funnel-bar" style={{ width: `${Math.max(4, f.pct)}%` }}>
+                        <span className="adm-funnel-n">{f.count}</span>
+                      </div>
+                      <div className="adm-funnel-meta">
+                        <span className="adm-funnel-label">{f.label}</span>
+                        <span className="adm-dim adm-small">{f.pct}% of all{i > 0 ? ` · ${conv}% from prev` : ""}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="adm-two">
+                <div>
+                  <h5 className="adm-h5">Time by screen (avg / player)</h5>
+                  <div className="adm-bars">
+                    {data.screens.map((s) => {
+                      const maxAvg = Math.max(1, ...data.screens.map((x) => x.avgSeconds));
+                      return (
+                        <div key={s.screen} className="adm-bar-row" title={`total ${fmtDur(s.seconds)} · ${s.sessions} player(s)`}>
+                          <span className="adm-bar-label">{SCREEN_ICON[s.screen] ?? "•"} {s.screen}</span>
+                          <span className="adm-bar-track"><i style={{ width: `${(s.avgSeconds / maxAvg) * 100}%`, background: "#ffc233" }} /></span>
+                          <span className="adm-bar-n" style={{ fontSize: 10 }}>{fmtDur(s.avgSeconds)}</span>
+                        </div>
+                      );
+                    })}
+                    {data.screens.length === 0 && <p className="adm-note">No screen data yet.</p>}
+                  </div>
+                </div>
+                <div>
+                  <h5 className="adm-h5">Retention</h5>
+                  <div className="adm-ret">
+                    <div className="adm-ret-tile"><b>{data.retention.newPlayers}</b><small>new (1 visit)</small></div>
+                    <div className="adm-ret-tile"><b>{data.retention.returningPlayers}</b><small>returning</small></div>
+                    <div className="adm-ret-tile"><b>{data.retention.returningPct}%</b><small>return rate</small></div>
+                    <div className="adm-ret-tile"><b>{data.retention.retainedPct}%</b><small>day-1 retention</small></div>
+                  </div>
+                  <p className="adm-note adm-dim adm-small">
+                    Day-1 = of {data.retention.eligible24h} player(s) first seen &gt;24h ago, {data.retention.retained24h} came back in the last 24h.
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -468,6 +525,24 @@ function TelemetrySection() {
                   <Stat k="First seen" v={drill.session?.first_seen ? new Date(drill.session.first_seen).toLocaleString() : "—"} />
                 </div>
                 <p className="adm-note adm-dim adm-small">{drill.session?.user_agent}</p>
+
+                {drill.screenTime.length > 0 && (
+                  <>
+                    <h5 className="adm-h5">⏳ Time by screen</h5>
+                    <div className="adm-bars">
+                      {drill.screenTime.map((s) => {
+                        const mx = Math.max(1, ...drill.screenTime.map((x) => x.seconds));
+                        return (
+                          <div key={s.screen} className="adm-bar-row">
+                            <span className="adm-bar-label">{SCREEN_ICON[s.screen] ?? "•"} {s.screen}</span>
+                            <span className="adm-bar-track"><i style={{ width: `${(s.seconds / mx) * 100}%`, background: "#ffc233" }} /></span>
+                            <span className="adm-bar-n" style={{ fontSize: 10 }}>{fmtDur(s.seconds)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
 
                 <h5 className="adm-h5">🖱 Buttons clicked ({drill.buttonCounts.length})</h5>
                 <BarList

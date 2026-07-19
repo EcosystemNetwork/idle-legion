@@ -1321,6 +1321,57 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .subnav { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .subnav-title { font-family: var(--font-head); color: var(--gold); font-size: 18px; }
 
+/* ================= 3D KINGDOM (live Three.js world) ================= */
+.game-world {
+  position: relative;
+  width: 100%;
+  height: min(70vh, 620px);
+  min-height: 380px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 3px solid #000;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6), inset 0 0 90px rgba(0, 0, 0, 0.6);
+  background: radial-gradient(70% 70% at 50% 35%, #1a1230, #0b0710 70%);
+}
+.gw-canvas { position: absolute; inset: 0; }
+.gw-canvas canvas { touch-action: none; display: block; }
+/* Loading veil until the first frame is up. */
+.gw-veil {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: radial-gradient(60% 60% at 50% 45%, #201540, #0b0710);
+}
+.gw-veil::after {
+  content: ""; width: 42px; height: 42px; border-radius: 50%;
+  border: 3px solid rgba(255, 194, 51, 0.25); border-top-color: var(--gold);
+  animation: gw-spin 0.9s linear infinite;
+}
+@keyframes gw-spin { to { transform: rotate(360deg); } }
+/* Title overlay, top-centre, non-interactive so drags pass through. */
+.gw-head {
+  position: absolute; top: 14px; left: 0; right: 0; text-align: center;
+  pointer-events: none; text-shadow: 0 2px 6px #000;
+}
+.gw-head h2 {
+  font-family: var(--font-head); color: var(--gold); font-size: 26px; margin: 0;
+  text-shadow: 0 2px 0 #000, 0 0 22px rgba(255, 194, 51, 0.45);
+}
+.gw-head span { color: var(--brass); letter-spacing: 3px; font-size: 11px; text-transform: uppercase; }
+/* Hover / hint chip, bottom-centre. */
+.gw-tip {
+  position: absolute; left: 50%; bottom: 16px; transform: translate(-50%, 8px);
+  display: flex; align-items: center; gap: 10px; padding: 8px 16px;
+  border-radius: 12px; border: 2px solid #000; pointer-events: none;
+  background: linear-gradient(180deg, rgba(36, 26, 58, 0.92), rgba(20, 15, 36, 0.92));
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+  opacity: 0; transition: opacity 0.18s, transform 0.18s;
+}
+.gw-tip.show { opacity: 1; transform: translate(-50%, 0); }
+.gw-tip strong { font-family: var(--font-head); color: #fff; font-size: 15px; }
+.gw-tip em { color: var(--muted); font-style: normal; font-size: 12px; }
+.gw-tip .gw-enter { color: var(--gold); font-size: 12px; font-weight: 700; }
+.gw-tip .gw-hint { color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .gw-veil::after { animation: none; } }
+
 /* ---------- Admin telemetry dashboard (elite) ---------- */
 .adm-token { flex: 1; min-width: 150px; background: rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 7px; color: #fff;
@@ -1664,3 +1715,30 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
   display: flex; align-items: flex-end; justify-content: center; gap: 12px; padding: 0 24px 3%;
 }
 .rs-floor model-viewer { --poster-color: transparent; background: transparent; }
+
+/* --- live multiplayer badges --- */
+.live-badge { font-size: 11px; font-weight: 800; color: #0b1a0e; background: #5fe38a; padding: 2px 8px; border-radius: 999px; vertical-align: middle; box-shadow: 0 0 10px rgba(95,227,138,0.6); animation: warnpulse 2s ease-in-out infinite; }
+.sim-badge { font-size: 11px; font-weight: 700; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 999px; vertical-align: middle; }
+.duel-card.real { border-color: rgba(95,227,138,0.45); box-shadow: 0 0 0 1px rgba(95,227,138,0.15) inset; }
+
+/* ---------- Admin insights (funnel + retention) ---------- */
+.adm-funnel { display: flex; flex-direction: column; gap: 8px; margin-bottom: 6px; }
+.adm-funnel-step { display: flex; align-items: center; gap: 10px; }
+.adm-funnel-bar { min-width: 30px; height: 28px; border-radius: 6px; display: flex; align-items: center;
+  justify-content: flex-end; padding: 0 8px; background: linear-gradient(90deg, #7a5410, var(--gold));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1); transition: width 0.5s ease; flex: none; }
+.adm-funnel-n { font-weight: 800; color: #0c0714; font-size: 12px; font-variant-numeric: tabular-nums; }
+.adm-funnel-meta { display: flex; flex-direction: column; line-height: 1.25; }
+.adm-funnel-label { font-size: 12px; font-weight: 700; }
+
+.adm-ret { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.adm-ret-tile { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 9px; padding: 8px; text-align: center; }
+.adm-ret-tile b { display: block; font-family: var(--font-head); font-size: 18px; color: var(--gold); }
+.adm-ret-tile small { display: block; font-size: 9px; text-transform: uppercase; color: #8a819c; margin-top: 2px; }
+
+/* room worker 3D frog + happiness face */
+.ch-worker { position: absolute; right: 10px; bottom: 2px; z-index: 2; pointer-events: none; }
+.ch-worker model-viewer { --poster-color: transparent; background: transparent; filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.6)); }
+.ch-mood { position: absolute; top: 8px; right: 12px; z-index: 4; font-size: 22px; filter: drop-shadow(0 2px 3px #000); animation: moodbob 2.2s ease-in-out infinite; }
+@keyframes moodbob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }

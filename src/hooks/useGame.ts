@@ -25,6 +25,7 @@ import {
   clearDuelResult,
   clearWorldBossReward,
   duel,
+  duelAgainst,
   grantBundle,
   grantGearItem,
   grantGladiator,
@@ -53,6 +54,7 @@ import {
   upgradeGear,
   upgradeLand,
   upgradeRoom,
+  type DuelOpponent,
   type FightResult,
   type Pull,
   type WorldBossHit,
@@ -264,6 +266,7 @@ export function useGame() {
       upgradeLand: (plotId: string) => wrap((s) => upgradeLand(s, plotId)),
       clearWorldBossReward: () => wrap(clearWorldBossReward),
       duel: (oppId: number) => wrap((s) => duel(s, oppId)),
+      duelReal: (opp: DuelOpponent) => wrap((s) => duelAgainst(s, opp)),
       clearDuelResult: () => wrap(clearDuelResult),
       clearError: () => setError(null),
       // Dev/admin escape hatch — shallow-merge an arbitrary state patch.

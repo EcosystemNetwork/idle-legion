@@ -31,6 +31,8 @@ let loggedIn = false;
 let activeStart = 0;        // ms timestamp the current focused stretch began (0 = not active)
 let pendingActiveMs = 0;    // active ms accumulated since the last flush
 let newVisitPending = false; // true until the first flush of this page load lands
+let currentScreen = "stronghold";              // which tab/screen the player is on
+let pendingScreenMs: Record<string, number> = {}; // active ms per screen since last flush
 
 function getSessionId(): string {
   if (sessionId) return sessionId;
@@ -72,12 +74,23 @@ export function markLogin(nextEmail: string | null, wallet: string | null) {
   void flush();
 }
 
-// Roll the currently-open active stretch into the pending accumulator.
+// Roll the currently-open active stretch into the pending accumulators
+// (total engagement + the current screen's dwell).
 function harvestActive() {
   if (activeStart) {
-    pendingActiveMs += Date.now() - activeStart;
+    const delta = Date.now() - activeStart;
+    pendingActiveMs += delta;
+    pendingScreenMs[currentScreen] = (pendingScreenMs[currentScreen] ?? 0) + delta;
     activeStart = document.visibilityState === "visible" ? Date.now() : 0;
   }
+}
+
+// Tell telemetry which screen/tab the player switched to. Banks the dwell on the
+// previous screen before switching so per-screen time stays accurate.
+export function setScreen(name: string) {
+  if (name === currentScreen) return;
+  harvestActive();
+  currentScreen = name;
 }
 
 export async function flush(useBeacon = false): Promise<void> {
@@ -88,6 +101,8 @@ export async function flush(useBeacon = false): Promise<void> {
   queue = [];
   const activeMs = pendingActiveMs;
   pendingActiveMs = 0;
+  const screens = pendingScreenMs;
+  pendingScreenMs = {};
   const isNewVisit = newVisitPending;
   newVisitPending = false;
   const payload = JSON.stringify({
@@ -96,6 +111,7 @@ export async function flush(useBeacon = false): Promise<void> {
     walletAddress,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     activeMs,
+    screens,
     newVisit: isNewVisit,
     events: batch,
   });
@@ -200,12 +216,22 @@ export interface PlayerSession {
   last_login: string | null;
 }
 
+export interface FunnelStep { key: string; label: string; count: number; pct: number }
+export interface ScreenStat { screen: string; seconds: number; sessions: number; avgSeconds: number }
+export interface Retention {
+  newPlayers: number; returningPlayers: number; returningPct: number;
+  eligible24h: number; retained24h: number; retainedPct: number;
+}
+
 export interface AdminAnalytics {
   totals: { sessions: number; events: number; clicks: number; countries: number; onlineNow: number; avgActiveSec: number };
   series: Array<{ t: string; count: number }>;
   byType: Array<{ type: string; count: number }>;
   topEvents: Array<{ name: string; count: number }>;
   byCountry: Array<{ country: string; count: number; code: string | null }>;
+  screens: ScreenStat[];
+  funnel: FunnelStep[];
+  retention: Retention;
   sessions: PlayerSession[];
   recent: Array<{ name: string; type: string; at: string; email: string | null; city: string | null; country: string | null; code: string | null; session_id: string }>;
   generatedAt: string;
@@ -215,6 +241,7 @@ export interface SessionDetail {
   session: PlayerSession | null;
   events: Array<{ event_name: string; event_type: string; created_at: string; meta: Record<string, unknown> | null }>;
   buttonCounts: Array<{ name: string; type: string; count: number }>;
+  screenTime: Array<{ screen: string; seconds: number }>;
 }
 
 async function adminPost(token: string, body: Record<string, unknown>) {

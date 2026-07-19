@@ -58,7 +58,9 @@ export default async function (req: Request): Promise<Response> {
       else counts.set(e.event_name, { name: e.event_name, type: e.event_type, count: 1 });
     }
     const buttonCounts = [...counts.values()].sort((a, b) => b.count - a.count);
-    return json({ sessionDetail: { session, events, buttonCounts } });
+    const { data: screenTime = [] } = await admin.database
+      .from("analytics_screen_time").select("screen,seconds").eq("session_id", sid).order("seconds", { ascending: false });
+    return json({ sessionDetail: { session, events, buttonCounts, screenTime } });
   }
 
   // ---- overview ----
@@ -126,6 +128,51 @@ export default async function (req: Request): Promise<Response> {
     ? engaged.reduce((a, s) => a + (s.active_seconds ?? 0), 0) / engaged.length
     : 0;
 
+  // Per-screen dwell time across all players.
+  const { data: screenRows = [] } = await admin.database
+    .from("analytics_screen_time").select("session_id,screen,seconds").limit(20000);
+  const scAgg = new Map<string, { seconds: number; sessions: Set<string> }>();
+  for (const r of screenRows as any[]) {
+    const cur = scAgg.get(r.screen) ?? { seconds: 0, sessions: new Set<string>() };
+    cur.seconds += r.seconds ?? 0;
+    cur.sessions.add(r.session_id);
+    scAgg.set(r.screen, cur);
+  }
+  const screens = [...scAgg.entries()]
+    .map(([screen, v]) => ({ screen, seconds: Math.round(v.seconds), sessions: v.sessions.size, avgSeconds: Math.round(v.seconds / v.sessions.size) }))
+    .sort((a, b) => b.seconds - a.seconds);
+
+  // Conversion funnel — count distinct sessions that reached each step.
+  // Steps match on the click-label substring (labels carry dynamic cost text).
+  const STEPS = [
+    { key: "visited", label: "Visited the game", test: (_n: string, _t: string) => true },
+    { key: "recruited", label: "Recruited a gladiator", test: (n: string) => /recruit/i.test(n) },
+    { key: "fought", label: "Fought the boss", test: (n: string) => /fight/i.test(n) },
+    { key: "raided", label: "Launched a raid", test: (n: string) => /march|raid/i.test(n) },
+  ];
+  const stepHits = STEPS.map(() => new Set<string>());
+  for (const e of eList) {
+    for (let i = 1; i < STEPS.length; i++) if (STEPS[i].test(e.event_name, e.event_type)) stepHits[i].add(e.session_id);
+  }
+  const totalSessions = sList.length || 1;
+  const funnel = STEPS.map((s, i) => {
+    const count = i === 0 ? sList.length : stepHits[i].size;
+    return { key: s.key, label: s.label, count, pct: Math.round((count / totalSessions) * 100) };
+  });
+
+  // New vs returning + next-day retention.
+  const returningPlayers = sList.filter((s) => (s.visits ?? 0) > 1).length;
+  const newPlayers = sList.length - returningPlayers;
+  const dayAgo = now - 86400_000;
+  const eligible = sList.filter((s) => s.first_seen && new Date(s.first_seen).getTime() < dayAgo);
+  const retained = eligible.filter((s) => s.last_seen && new Date(s.last_seen).getTime() >= dayAgo).length;
+  const retention = {
+    newPlayers, returningPlayers,
+    returningPct: Math.round((returningPlayers / totalSessions) * 100),
+    eligible24h: eligible.length, retained24h: retained,
+    retainedPct: eligible.length ? Math.round((retained / eligible.length) * 100) : 0,
+  };
+
   const recent = eList.slice(0, 80).map((e) => {
     const s = sById.get(e.session_id);
     return {
@@ -148,6 +195,9 @@ export default async function (req: Request): Promise<Response> {
     byType,
     topEvents,
     byCountry,
+    screens,
+    funnel,
+    retention,
     sessions: sList,
     recent,
     generatedAt: new Date().toISOString(),
