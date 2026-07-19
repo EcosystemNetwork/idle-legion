@@ -1,9 +1,46 @@
 import {
   APTITUDE_LABEL,
+  BANK_FEE_SCHEDULE,
+  BANK_YIELD_PER_SEC,
   BOSSES,
   CLASS_ADVANTAGE,
   CLASS_BEATS,
   CLASS_DISADVANTAGE,
+  DEX_FEE,
+  DEX_SEED_GOLD,
+  DEX_SEED_LEGION,
+  GEN0_SUMMONS,
+  LAND_CLAIM_BASE_LEGION,
+  LAND_MIN_MIGHT,
+  LAND_SLOTS,
+  LAND_UPGRADE_BASE_GOLD,
+  LAND_YIELD,
+  PVP_DAILY_ATTACKS,
+  PVP_K,
+  PVP_OPP_COUNT,
+  PVP_RANK_NAMES,
+  PVP_START_RATING,
+  PVP_WIN_GOLD,
+  PVP_WIN_LEGION,
+  SUMMON_BASE_GOLD,
+  SUMMON_BASE_LEGION,
+  SUMMON_COOLDOWN_BASE_MS,
+  SUMMON_COOLDOWN_GROWTH_MS,
+  SUMMON_GOLD_PER_GEN,
+  SUMMON_LEGION_PER_SUMMON,
+  SUMMON_MUTATE_UP,
+  SUMMON_RECESSIVE_SURFACE,
+  MAX_RECESSIVE,
+  WB_BASE_HP,
+  WB_HP_GROWTH,
+  WB_HIT_COOLDOWN_MS,
+  WB_NAMES,
+  WB_PARTICIPATION,
+  WB_RANK_REWARDS,
+  WB_RIVAL_COUNT,
+  WB_RIVAL_NAMES,
+  WB_STAMINA_PER_HIT,
+  WB_WEEK_MS,
   DAILY_GOLD_BASE,
   DAILY_GOLD_PER_STREAK,
   DAILY_GRACE_DAYS,
@@ -1404,6 +1441,28 @@ export function claimDaily(state: GameState, now = Date.now()): GameState {
     lunchboxes: state.lunchboxes + lunchboxes,
     daily: { lastClaimDay: dayIndex(now), streak },
   };
+}
+
+/**
+ * Grant an arbitrary reward bundle — the shared payout path for the day-69
+ * streak jackpot and for completed Operator (Scrying Mirror) missions. Additive
+ * and pure; gear/champions reuse the existing grant helpers.
+ */
+export function grantBundle(
+  state: GameState,
+  b: { gold?: number; lunchboxes?: number; gear?: string[]; champions?: number },
+): GameState {
+  let next: GameState = {
+    ...state,
+    gold: state.gold + (b.gold ?? 0),
+    totalGoldEarned: state.totalGoldEarned + (b.gold ?? 0),
+    lunchboxes: state.lunchboxes + (b.lunchboxes ?? 0),
+  };
+  for (const defId of b.gear ?? []) next = grantGearItem(next, defId);
+  for (let i = 0; i < (b.champions ?? 0); i++) {
+    next = { ...next, dwellers: [...next.dwellers, makeDweller("champion")] };
+  }
+  return next;
 }
 
 // ---------- equipment ----------

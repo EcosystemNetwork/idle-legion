@@ -107,6 +107,111 @@ export const WARCHEST_YIELD_PER_USD = 0.9;
 /** Vault storage cap = staked USD × this (so it must be collected, like a room). */
 export const WARCHEST_STORE_PER_USD = 1800;
 
+// ============================================================
+//  DEEP ECONOMY — summoning, DEX, bank, land, world boss, PvP
+// ============================================================
+
+// ---------- Genetic summoning (DeFi-Kingdoms breeding) ----------
+/** Times a freshly-minted founder (Gen0) can be summoned with. */
+export const GEN0_SUMMONS = 8;
+/** Gold & $LEGION for a summon — scales with generation and prior use. */
+export const SUMMON_BASE_GOLD = 800;
+export const SUMMON_BASE_LEGION = 20;
+export const SUMMON_GOLD_PER_GEN = 600; // + this × (sum of parents' generations)
+export const SUMMON_LEGION_PER_SUMMON = 4; // + this × (prior summons used, both parents)
+/** Fatigue cooldown after summoning — grows every time a hero is used. */
+export const SUMMON_COOLDOWN_BASE_MS = 60_000;
+export const SUMMON_COOLDOWN_GROWTH_MS = 30_000; // + this × (that hero's summons used)
+/** Chance a child's tier mutates up one rung (rarer blood). */
+export const SUMMON_MUTATE_UP = 0.18;
+/** Chance a recessive gene surfaces as the child's dominant trait. */
+export const SUMMON_RECESSIVE_SURFACE = 0.25;
+export const MAX_RECESSIVE = 3;
+
+// ---------- DEX (constant-product AMM: gold ⇄ $LEGION) ----------
+export const DEX_FEE = 0.003; // 0.3% swap fee, kept in the pool (LP value ↑)
+export const DEX_SEED_GOLD = 12_000;
+export const DEX_SEED_LEGION = 12_000;
+
+// ---------- Bank (single-stake $LEGION → real-yield emissions) ----------
+/** $LEGION yielded per second per $LEGION staked (base emission). */
+export const BANK_YIELD_PER_SEC = 0.0009; // ~7.8%/day
+/** Anti-mercenary withdrawal fee decays with time staked (DFK schedule). */
+export const BANK_FEE_SCHEDULE: { underMs: number; fee: number }[] = [
+  { underMs: 60_000, fee: 0.25 }, // < 1 min
+  { underMs: 3_600_000, fee: 0.08 }, // < 1 hour
+  { underMs: 86_400_000, fee: 0.04 }, // < 1 day
+];
+
+// ---------- Land / territories ----------
+/** How many parcels exist to claim (scarcity). */
+export const LAND_SLOTS = 9;
+export const LAND_CLAIM_BASE_LEGION = 40; // rises with each parcel owned
+export const LAND_UPGRADE_BASE_GOLD = 500;
+/** Min legion MIGHT to be allowed to claim territory (hero-gated). */
+export const LAND_MIN_MIGHT = 120;
+/** Per-second yield of a level-1 parcel, by kind. Scales linearly with level. */
+export const LAND_YIELD: Record<
+  "gold" | "provisions" | "salves" | "legion" | "might",
+  number
+> = {
+  gold: 6,
+  provisions: 1.2,
+  salves: 0.5,
+  legion: 0.12,
+  might: 40, // "might" parcels are a flat boost per level, not a per-sec resource
+};
+export const LAND_KIND_META: Record<
+  "gold" | "provisions" | "salves" | "legion" | "might",
+  { name: string; icon: string }
+> = {
+  gold: { name: "Gold Claim", icon: "⛏️" },
+  provisions: { name: "Grain Field", icon: "🌾" },
+  salves: { name: "Herb Garden", icon: "⛑️" },
+  legion: { name: "$LEGION Node", icon: "💠" },
+  might: { name: "Watchtower", icon: "🏯" },
+};
+
+// ---------- Shared World Boss (simulated co-op + leaderboard) ----------
+export const WB_BASE_HP = 240_000;
+export const WB_HP_GROWTH = 0.6; // +60% HP per tier
+export const WB_WEEK_MS = 7 * 86_400_000;
+export const WB_HIT_COOLDOWN_MS = 8_000;
+export const WB_STAMINA_PER_HIT = 20;
+export const WB_RIVAL_COUNT = 7;
+export const WB_NAMES = [
+  "The Colossus of the Deep", "Rugbringer, Chain-Eater", "The Bridgewraith",
+  "Moloch of the Mempool", "The Gas Tyrant",
+];
+export const WB_RIVAL_NAMES = [
+  "House Vitalik", "The Satoshi Legion", "Paperhands Regiment", "Diamond Cohort",
+  "The Whale Guard", "Degenerate Host", "Cold-Storage Clan", "The Maxi Phalanx",
+  "Liquidation Squad", "The Hodl Vanguard", "Mempool Marauders", "Airdrop Irregulars",
+];
+/** Rewards for a world-boss cycle, by finishing rank (index 0 = #1). Beyond the
+ *  table, everyone who contributed gets the participation tail. */
+export const WB_RANK_REWARDS = [
+  { gold: 20_000, legion: 400, lunchboxes: 3 },
+  { gold: 12_000, legion: 240, lunchboxes: 2 },
+  { gold: 8_000, legion: 150, lunchboxes: 1 },
+];
+export const WB_PARTICIPATION = { gold: 2_500, legion: 40, lunchboxes: 0 };
+
+// ---------- PvP ladder (simulated ranked duels) ----------
+export const PVP_START_RATING = 1000;
+export const PVP_DAILY_ATTACKS = 6;
+export const PVP_K = 32; // ELO K-factor
+export const PVP_WIN_GOLD = 900;
+export const PVP_WIN_LEGION = 25;
+export const PVP_OPP_COUNT = 3;
+export const PVP_RANK_NAMES: { min: number; name: string }[] = [
+  { min: 1600, name: "Champion of the Deep" },
+  { min: 1400, name: "Warlord" },
+  { min: 1250, name: "Centurion" },
+  { min: 1100, name: "Optio" },
+  { min: 0, name: "Legionary" },
+];
+
 export const APTITUDE_LABEL: Record<Aptitude, string> = {
   labor: "Labor",
   hunt: "Hunt",
@@ -268,6 +373,18 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     description: "Plan raids on the Wastes — a dusty map, red string, and one guy insisting the top is in.",
     unique: true,
   },
+  portal: {
+    type: "portal",
+    name: "Summoning Portal",
+    icon: "🌀",
+    aptitude: null,
+    produces: null,
+    capacityPerLevel: 0,
+    storePerLevel: 0,
+    buildCost: 900,
+    description: "A cracked gate that still hums with pre-Rug magic. Bind two gladiators' bloodlines to summon new-blood — genes and all — for gold and $LEGION.",
+    unique: true,
+  },
   warchest: {
     type: "warchest",
     name: "Treasury Vault",
@@ -284,7 +401,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
 };
 
 /** Rooms the player can dig (hall/warchest are pre-placed). */
-export const BUILDABLE: RoomType[] = ["mine", "granary", "infirmary", "forge", "warroom"];
+export const BUILDABLE: RoomType[] = ["mine", "granary", "infirmary", "forge", "warroom", "portal"];
 
 export const RAIDS: RaidMission[] = [
   {
@@ -450,6 +567,7 @@ export const ROOM_ART: Record<RoomType, string> = {
   infirmary: KIT.bld.alchemy, // apothecary/alchemy kit art fits the field-medbay
   forge: `${B}art/room-forge.jpg`,
   warroom: `${B}art/room-warroom.jpg`,
+  portal: KIT.bld.throne, // arcane gate — throne/altar kit art fits the summoning circle
   warchest: `${B}art/room-warchest.jpg`,
 };
 

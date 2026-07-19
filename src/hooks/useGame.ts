@@ -20,6 +20,7 @@ import {
   fightBoss,
   fuseGear,
   buySlave,
+  grantBundle,
   grantGearItem,
   grantGladiator,
   healAll,
@@ -143,6 +144,8 @@ export function useGame() {
       clearLevelUps: () => wrap(clearLevelUps),
       grantGladiator: (tier: Tier) => wrap((s) => grantGladiator(s, tier)),
       grantGear: (defId: string) => wrap((s) => grantGearItem(s, defId)),
+      grantBundle: (b: { gold?: number; lunchboxes?: number; gear?: string[]; champions?: number }) =>
+        wrap((s) => grantBundle(s, b)),
       sellHero: (id: string) => wrap((s) => sellHero(s, id)),
       sellGear: (gearItemId: string) => wrap((s) => sellGearItem(s, gearItemId)),
       clearError: () => setError(null),

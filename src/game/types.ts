@@ -28,6 +28,22 @@ export interface TierDef {
 export type Rarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 export type GearSlot = "weapon" | "armor" | "mount";
 
+/**
+ * A single expressed/carried trait pair — the atom of the summoning genome.
+ * Dominant traits are what the hero *is*; recessives are carried silently and
+ * can surface in children (DeFi-Kingdoms "gene sniping").
+ */
+export interface Gene {
+  aptitude: Aptitude;
+  combatClass: CombatClass;
+}
+
+/** Dual-genome: one expressed dominant gene + up to 3 carried recessives. */
+export interface Genome {
+  dominant: Gene;
+  recessive: Gene[];
+}
+
 /** Catalog definition of a piece of equipment. */
 export interface GearDef {
   id: string;
@@ -64,6 +80,11 @@ export interface Dweller {
   stamina: number; // current stamina; raids/arena spend it, rest regens it
   downed?: boolean; // incapacitated (hp hit 0) — can't work or fight until healed
   onchain?: boolean; // acquired on-chain → survives a Descend
+  // ----- genetics & summoning (DeFi-Kingdoms lineage) -----
+  gen?: number; // generation (0 = founder minted, not summoned)
+  summonsLeft?: number; // remaining times this hero can be summoned with
+  summonReadyAt?: number; // fatigue: earliest ms this hero can summon again
+  genome?: Genome; // dominant + recessive genes passed to children
   roomId: string | null; // assigned room, or null = idle in the Hall
   equipped: Equipped;
 }
@@ -77,6 +98,7 @@ export type RoomType =
   | "infirmary" // Infirmary — produces salves (heals wounded/downed legion)
   | "forge" // Forge — raises legion might (war)
   | "warroom" // War Room — launches raids
+  | "portal" // Summoning Portal — breed two heroes into a new-blood gladiator
   | "warchest"; // Treasury Vault — on-chain War Chest funding room (yields gold)
 
 /** Everything a room can pump out. `salves` heal the wounded (Fallout-Shelter medbay). */
@@ -244,10 +266,95 @@ export interface RaidReport {
   log: RaidLogEntry[];
 }
 
+// ---------- DEX / multi-token economy (DeFi-Kingdoms style) ----------
+
+/** Constant-product AMM pool: gold ⇄ $LEGION (k = poolGold × poolLegion). */
+export interface DexState {
+  poolGold: number;
+  poolLegion: number;
+}
+
+/** The Bank: stake $LEGION for real-yield emissions with a withdrawal-fee decay. */
+export interface BankState {
+  staked: number; // $LEGION staked
+  stakedAt: number; // ms of the last stake (drives the withdrawal-fee decay)
+  accrued: number; // unclaimed $LEGION yield
+  lastTick: number;
+}
+
+// ---------- Land / territories (scarce yield-bearing parcels) ----------
+
+export type LandKind = "gold" | "provisions" | "salves" | "legion" | "might";
+
+export interface LandPlot {
+  id: string;
+  kind: LandKind;
+  level: number;
+}
+
+// ---------- Shared World Boss (simulated co-op raid + leaderboard) ----------
+
+/** A rival legion contributing damage to the shared boss (seeded, client-sim). */
+export interface WorldBossRival {
+  name: string;
+  power: number; // damage per second this legion pours in
+  contributed: number; // running total this cycle
+}
+
+export interface WorldBossState {
+  tier: number; // escalates each defeat
+  hp: number;
+  maxHp: number;
+  endsAt: number; // weekly cycle deadline
+  contributed: number; // the player's damage this cycle
+  lastHitAt: number; // cooldown gate on the player's strikes
+  rivals: WorldBossRival[];
+  week: number; // cycle counter
+  lastReward: WorldBossReward | null; // pending payout banner for the UI
+}
+
+export interface WorldBossReward {
+  rank: number;
+  field: number; // how many legions were on the board
+  gold: number;
+  legion: number;
+  lunchboxes: number;
+  bossName: string;
+}
+
+// ---------- PvP ladder (simulated ranked duels) ----------
+
+export interface PvpState {
+  rating: number; // ELO-ish; drives rank + opponent strength
+  wins: number;
+  losses: number;
+  streak: number;
+  attacksLeft: number; // daily energy on duels
+  lastReset: number; // epoch-day of the last attack refill
+  lastResult: DuelResult | null; // pending duel outcome for the UI
+}
+
+export interface DuelResult {
+  won: boolean;
+  oppName: string;
+  ratingDelta: number;
+  gold: number;
+  legion: number;
+  classEdge: number;
+  yourPower: number;
+  oppPower: number;
+}
+
 export interface GameState {
   gold: number;
   provisions: number;
   salves: number; // healing stock — spent to mend wounded/downed legion
+  legion: number; // $LEGION — the ecosystem token (DEX / bank / summon / land)
+  dex: DexState;
+  bank: BankState;
+  land: LandPlot[];
+  worldBoss: WorldBossState;
+  pvp: PvpState;
   rooms: Room[];
   dwellers: Dweller[];
   market: MarketOffer[]; // slave-market stock at the gate
@@ -280,10 +387,11 @@ export interface GameState {
 }
 
 export interface DerivedStats {
-  might: number; // total legion might (from dwellers + forge)
-  goldPerSec: number; // live gold production across staffed mines + vault yield
+  might: number; // total legion might (from dwellers + forge + land)
+  goldPerSec: number; // live gold production across staffed mines + vault + land
   provisionsPerSec: number; // net provisions (granary output − population upkeep)
-  salvesPerSec: number; // net salves (infirmary output)
+  salvesPerSec: number; // net salves (infirmary + land)
+  legionPerSec: number; // $LEGION produced by land + bank yield
   population: number;
   idleCount: number;
   woundedCount: number; // dwellers below full health (incl. downed)

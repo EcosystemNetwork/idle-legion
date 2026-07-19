@@ -1,4 +1,4 @@
-import { createElement, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { createElement, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import "@google/model-viewer";
 
 // Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
@@ -91,6 +91,22 @@ import {
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
 import type { CombatClass, Dweller, GameState, GearItem, GearSlot, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
+import {
+  claimMirror,
+  completeMission,
+  getCachedMirror,
+  operatorFeed,
+  type CompleteResult,
+  type MirrorStatus,
+  type OperatorMission,
+} from "./lib/insforge";
+import {
+  DAY69_JACKPOT,
+  JACKPOT_STREAK_DAY,
+  MIRROR_SOLDOUT_CONSOLATION,
+  MIRROR_STREAK_DAY,
+  SCRYING_MIRROR_SUPPLY,
+} from "./game/streak";
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
@@ -102,7 +118,7 @@ function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "market" | "codex";
+type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "market" | "codex" | "operator";
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
@@ -237,6 +253,14 @@ export default function App() {
   const [reveal, setReveal] = useState<Pull | null>(null);
   const [email, setEmail] = useState("");
   const [admin, setAdmin] = useState(false);
+  // Scrying Mirror / Operator state (ownership lives in localStorage via the lib,
+  // decoupled from the game save so it survives descents/resets like an account relic).
+  const [mirror, setMirror] = useState<MirrorStatus>(() => getCachedMirror());
+  const [mirrorReveal, setMirrorReveal] = useState<
+    { status: string; serial?: number | null; remaining?: number; total?: number } | null
+  >(null);
+  const [mirrorBusy, setMirrorBusy] = useState(false);
+  const [jackpot, setJackpot] = useState(false);
 
   useUiSounds();
   useTabTitleEarnings(stats.goldPerSec, stats.fed);
@@ -254,6 +278,51 @@ export default function App() {
       walletAddress: wallet.session?.address ?? null,
     });
   }, [wallet.session]);
+
+  // Attempt the day-8 Scrying Mirror claim. Network-resilient: any failure leaves
+  // the streak intact and the retry prompt visible, so a flaky connection or a
+  // backend blip never costs the player their relic.
+  const attemptMirror = useCallback(async () => {
+    if (mirrorBusy || mirror.serial != null || mirror.soldOut) return;
+    setMirrorBusy(true);
+    try {
+      const res = await claimMirror();
+      setMirror(getCachedMirror());
+      if (res.status === "claimed") {
+        setMirrorReveal({ status: "claimed", serial: res.serial, remaining: res.remaining, total: res.total });
+      } else if (res.status === "sold_out") {
+        actions.grantBundle(MIRROR_SOLDOUT_CONSOLATION);
+        setMirrorReveal({ status: "sold_out" });
+      } else if (res.status === "rate_limited") {
+        setMirrorReveal({ status: "rate_limited" });
+      }
+      // "already" → we hold it; UI already reflects it, no modal.
+    } catch {
+      setMirrorReveal({ status: "error" });
+    } finally {
+      setMirrorBusy(false);
+    }
+  }, [mirrorBusy, mirror.serial, mirror.soldOut, actions]);
+
+  // Claim the daily tribute, then layer on the streak milestones: the day-8
+  // Scrying Mirror (async, capped supply) and the day-69 jackpot.
+  const handleClaimDaily = useCallback(() => {
+    const day = dailyReward(state, now).streak;
+    actions.claimDaily();
+    if (day === JACKPOT_STREAK_DAY) {
+      actions.grantBundle(DAY69_JACKPOT);
+      setJackpot(true);
+      const cx = window.innerWidth / 2;
+      const cy = window.innerHeight * 0.4;
+      shake(18);
+      ring(cx, cy, "#ffc233", 34);
+      burst(cx, cy, { color: "#ffe08a", count: 60, kind: "shard", power: 11 });
+      sfx.legendary();
+    }
+    if (day >= MIRROR_STREAK_DAY && mirror.serial == null && !mirror.soldOut) {
+      void attemptMirror();
+    }
+  }, [state, now, actions, mirror.serial, mirror.soldOut, attemptMirror]);
 
   // Toggle the admin panel with the ` (backtick) key.
   useEffect(() => {

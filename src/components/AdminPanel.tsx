@@ -1,7 +1,7 @@
 // Admin / debug panel — "see everything" overlay.
 // Read-only inspection of the full game + wallet state, plus dev cheat controls.
 // Toggle with the 🛠 button (bottom-left) or the ` (backtick) key.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BOSSES,
   GEAR_CATALOG,
@@ -29,7 +29,6 @@ import {
   fetchAdminAnalytics,
   fetchSessionDetail,
   type AdminAnalytics,
-  type PlayerSession,
   type SessionDetail,
 } from "../lib/telemetry";
 
@@ -110,13 +109,83 @@ function NumField({
 }
 
 const ADMIN_TOKEN_KEY = "idle-legion-admin-token";
-const rel = (iso: string) => {
+type DashTab = "overview" | "players" | "live" | "geo";
+
+const rel = (iso: string | null | undefined) => {
+  if (!iso) return "—";
   const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 };
+
+// country_code (ISO-2) -> flag emoji
+const flag = (code: string | null | undefined) => {
+  if (!code || code.length !== 2) return "🏳️";
+  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+};
+
+// Event types render in a fixed categorical order (validated blue/green/magenta/
+// yellow), always paired with the type word so identity is never color-alone.
+const ETYPE_COLOR: Record<string, string> = {
+  click: "#3987e5", action: "#008300", pageview: "#d55181", session_start: "#c98500",
+};
+const etColor = (t: string) => ETYPE_COLOR[t] ?? "#8a819c";
+
+const shortAddr = (a: string | null) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—");
+const csvCell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+// ---- tiny SVG charts (no deps) ----
+
+// Single-series 24h activity — area+line, gold. No legend (title names it).
+function ActivityChart({ series }: { series: AdminAnalytics["series"] }) {
+  const w = 460, h = 90, pad = 4;
+  const max = Math.max(1, ...series.map((p) => p.count));
+  const n = series.length;
+  const x = (i: number) => pad + (i / Math.max(1, n - 1)) * (w - pad * 2);
+  const y = (v: number) => h - pad - (v / max) * (h - pad * 2 - 10);
+  const line = series.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.count).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(n - 1).toFixed(1)},${h - pad} L${x(0).toFixed(1)},${h - pad} Z`;
+  const peak = series.reduce((m, p, i) => (p.count > series[m].count ? i : m), 0);
+  return (
+    <div className="adm-chart">
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="adm-svg" role="img" aria-label="Events per hour, last 24 hours">
+        <defs>
+          <linearGradient id="admArea" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#ffc233" stopOpacity="0.42" />
+            <stop offset="100%" stopColor="#ffc233" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <path d={area} fill="url(#admArea)" />
+        <path d={line} fill="none" stroke="#ffc233" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {series.map((p, i) => (
+          <rect key={i} x={x(i) - (w / n) / 2} y={0} width={w / n} height={h} fill="transparent">
+            <title>{`${new Date(p.t).toLocaleTimeString([], { hour: "2-digit" })} · ${p.count} events`}</title>
+          </rect>
+        ))}
+        {max > 1 && <circle cx={x(peak)} cy={y(series[peak].count)} r="2.5" fill="#fff0b0" />}
+      </svg>
+      <div className="adm-chart-x"><span>24h ago</span><span>now</span></div>
+    </div>
+  );
+}
+
+// Horizontal magnitude bars — single hue (gold), value labelled at the end.
+function BarList({ rows, max, accent = "#ffc233" }: { rows: { key: string; label: React.ReactNode; count: number; title?: string }[]; max: number; accent?: string }) {
+  return (
+    <div className="adm-bars">
+      {rows.map((r) => (
+        <div key={r.key} className="adm-bar-row" title={r.title}>
+          <span className="adm-bar-label">{r.label}</span>
+          <span className="adm-bar-track"><i style={{ width: `${max ? (r.count / max) * 100 : 0}%`, background: accent }} /></span>
+          <span className="adm-bar-n">{num(r.count)}</span>
+        </div>
+      ))}
+      {rows.length === 0 && <p className="adm-note">No data yet.</p>}
+    </div>
+  );
+}
 
 // Cross-user telemetry dashboard — reads the InsForge backend (all players'
 // clicks, emails, and IP-derived locations). Gated by the admin token.
@@ -127,7 +196,20 @@ function TelemetrySection() {
   const [data, setData] = useState<AdminAnalytics | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [auto, setAuto] = useState(false);
+  const [autoMs, setAutoMs] = useState(0); // 0 = off
+  const [tab, setTab] = useState<DashTab>("overview");
+  const [tick, setTick] = useState(0); // re-render for "x ago" + countdown
+  const lastAt = useRef(0);
+
+  // Players tab controls
+  const [q, setQ] = useState("");
+  const [sortKey, setSortKey] = useState<"last_seen" | "total_clicks" | "total_events" | "email" | "country">("last_seen");
+  const [drill, setDrill] = useState<SessionDetail | null>(null);
+  const [drillId, setDrillId] = useState<string | null>(null);
+
+  // Live tab controls
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [paused, setPaused] = useState(false);
 
   const load = async () => {
     if (!token) { setErr("Enter the admin token"); return; }
@@ -135,7 +217,9 @@ function TelemetrySection() {
     setErr(null);
     try {
       try { localStorage.setItem(ADMIN_TOKEN_KEY, token); } catch { /* ignore */ }
-      setData(await fetchAdminAnalytics(token.trim()));
+      const d = await fetchAdminAnalytics(token.trim());
+      setData(d);
+      lastAt.current = Date.now();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -143,93 +227,248 @@ function TelemetrySection() {
     }
   };
 
+  // Auto-refresh loop (respects pause on the Live tab).
   useEffect(() => {
-    if (!auto) return;
-    const id = window.setInterval(() => void load(), 8000);
+    if (!autoMs || !token) return;
+    const id = window.setInterval(() => { if (!(tab === "live" && paused)) void load(); }, autoMs);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, token]);
+  }, [autoMs, token, tab, paused]);
 
-  const maxClick = data?.topEvents.reduce((m, e) => Math.max(m, e.count), 0) ?? 0;
+  // 1s heartbeat so relative times + the countdown stay live.
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  void tick;
+
+  const openDrill = async (id: string) => {
+    setDrillId(id);
+    setDrill(null);
+    try { setDrill(await fetchSessionDetail(token.trim(), id)); } catch (e) { setErr((e as Error).message); }
+  };
+
+  const exportCsv = () => {
+    if (!data) return;
+    const header = ["email", "wallet", "ip", "city", "region", "country", "timezone", "isp", "clicks", "events", "first_seen", "last_seen", "user_agent"];
+    const lines = data.sessions.map((s) => [s.email, s.wallet_address, s.ip, s.city, s.region, s.country, s.timezone, s.isp, s.total_clicks, s.total_events, s.first_seen, s.last_seen, s.user_agent].map(csvCell).join(","));
+    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `idle-legion-players-${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const filteredSessions = useMemo(() => {
+    if (!data) return [];
+    const needle = q.trim().toLowerCase();
+    let rows = data.sessions;
+    if (needle) rows = rows.filter((s) => [s.email, s.country, s.city, s.wallet_address, s.ip, s.isp].some((f) => (f ?? "").toLowerCase().includes(needle)));
+    const dir = sortKey === "email" || sortKey === "country" ? 1 : -1;
+    return [...rows].sort((a: any, b: any) => {
+      const av = a[sortKey] ?? "", bv = b[sortKey] ?? "";
+      return av < bv ? -1 * dir : av > bv ? 1 * dir : 0;
+    });
+  }, [data, q, sortKey]);
+
+  const liveRows = useMemo(() => {
+    if (!data) return [];
+    return typeFilter === "all" ? data.recent : data.recent.filter((r) => r.type === typeFilter);
+  }, [data, typeFilter]);
+
+  const maxEvent = data?.topEvents[0]?.count ?? 0;
+  const maxType = data?.byType[0]?.count ?? 0;
+  const maxCountry = data?.byCountry[0]?.count ?? 0;
+  const countUntil = autoMs ? Math.max(0, Math.ceil((lastAt.current + autoMs - Date.now()) / 1000)) : 0;
 
   return (
-    <Section title="📡 Live telemetry · ALL users" count={data ? data.totals.sessions : "🔒"} defaultOpen>
+    <Section title="📡 Live telemetry · ALL users" count={data ? `${data.totals.onlineNow} live` : "🔒"} defaultOpen>
+      {/* connection bar */}
       <div className="adm-row">
         <input
-          type="password"
-          className="adm-token"
-          placeholder="admin token (x-admin-token)"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
+          type="password" className="adm-token" placeholder="admin token (x-admin-token)"
+          value={token} onChange={(e) => setToken(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") void load(); }}
         />
         <button className="adm-btn hot" onClick={() => void load()} disabled={loading}>
-          {loading ? "…" : data ? "Refresh" : "Connect"}
+          {loading ? "…" : data ? "↻ Refresh" : "Connect"}
         </button>
-        <label className="adm-auto">
-          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto
-        </label>
+        <select className="adm-mini-sel" value={autoMs} onChange={(e) => setAutoMs(Number(e.target.value))} title="Auto-refresh">
+          <option value={0}>manual</option>
+          <option value={5000}>5s</option>
+          <option value={15000}>15s</option>
+          <option value={30000}>30s</option>
+        </select>
+        {autoMs > 0 && data && <span className="adm-count-down">{countUntil}s</span>}
       </div>
       {err && <p className="adm-note warn">⚠ {err}</p>}
 
       {data && (
         <>
-          <div className="adm-grid">
-            <Stat k="Sessions (players)" v={data.totals.sessions} />
-            <Stat k="Events tracked" v={num(data.totals.events)} />
-            <Stat k="Total clicks" v={num(data.totals.clicks)} />
-            <Stat k="Refreshed" v={rel(data.generatedAt)} />
+          {/* KPI tiles */}
+          <div className="adm-kpis">
+            <div className="adm-kpi live">
+              <span className="adm-kpi-dot" /><b>{data.totals.onlineNow}</b><small>online now</small>
+            </div>
+            <div className="adm-kpi"><b>{num(data.totals.sessions)}</b><small>players</small></div>
+            <div className="adm-kpi"><b>{num(data.totals.clicks)}</b><small>clicks</small></div>
+            <div className="adm-kpi"><b>{num(data.totals.events)}</b><small>events</small></div>
+            <div className="adm-kpi"><b>{num(data.totals.countries)}</b><small>countries</small></div>
           </div>
 
-          <h5 className="adm-h5">🖱 What everyone clicks (top {Math.min(12, data.topEvents.length)})</h5>
-          <div className="adm-bars">
-            {data.topEvents.slice(0, 12).map((e) => (
-              <div key={e.name} className="adm-bar-row" title={`${e.name} · ${e.count}`}>
-                <span className="adm-bar-label">{e.name}</span>
-                <span className="adm-bar-track"><i style={{ width: `${maxClick ? (e.count / maxClick) * 100 : 0}%` }} /></span>
-                <span className="adm-bar-n">{e.count}</span>
+          {/* dashboard tabs */}
+          <div className="adm-dtabs">
+            {(["overview", "players", "live", "geo"] as DashTab[]).map((t) => (
+              <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+                {t === "overview" ? "📊 Overview" : t === "players" ? `👤 Players` : t === "live" ? "⏱ Live" : "🌍 Geo"}
+              </button>
+            ))}
+            <span className="adm-updated">updated {rel(data.generatedAt)}</span>
+          </div>
+
+          {tab === "overview" && (
+            <>
+              <h5 className="adm-h5">Activity · events / hour (24h)</h5>
+              <ActivityChart series={data.series} />
+
+              <div className="adm-two">
+                <div>
+                  <h5 className="adm-h5">🖱 Most-fired events</h5>
+                  <BarList
+                    max={maxEvent}
+                    rows={data.topEvents.slice(0, 10).map((e) => ({ key: e.name, label: e.name, count: e.count, title: `${e.name} · ${e.count}` }))}
+                  />
+                </div>
+                <div>
+                  <h5 className="adm-h5">Event mix</h5>
+                  <BarList
+                    max={maxType}
+                    rows={data.byType.map((e) => ({
+                      key: e.type,
+                      label: <span><i className="adm-swatch" style={{ background: etColor(e.type) }} />{e.type}</span>,
+                      count: e.count,
+                    }))}
+                  />
+                </div>
               </div>
-            ))}
-            {data.topEvents.length === 0 && <p className="adm-note">No events yet.</p>}
-          </div>
+            </>
+          )}
 
-          <h5 className="adm-h5">🌍 By country</h5>
-          <div className="adm-objs">
-            {data.byCountry.map((c) => (
-              <span key={c.country} className="adm-tag">{c.country} · {c.count}</span>
-            ))}
-          </div>
-
-          <h5 className="adm-h5">👤 Players ({data.sessions.length})</h5>
-          <table className="adm-table">
-            <thead><tr><th>Email</th><th>Location</th><th>Clicks</th><th>Wallet</th><th>Last seen</th></tr></thead>
-            <tbody>
-              {data.sessions.map((s: any) => (
-                <tr key={s.session_id} title={`${s.ip ?? "?"} · ${s.isp ?? ""} · ${s.user_agent ?? ""}`}>
-                  <td>{s.email ?? <span className="adm-dim">anon</span>}</td>
-                  <td>{[s.city, s.country].filter(Boolean).join(", ") || <span className="adm-dim">—</span>}</td>
-                  <td>{s.total_clicks}</td>
-                  <td>{s.wallet_address ? `${String(s.wallet_address).slice(0, 6)}…` : <span className="adm-dim">—</span>}</td>
-                  <td>{s.last_seen ? rel(s.last_seen) : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <h5 className="adm-h5">⏱ Recent event stream</h5>
-          <div className="adm-stream">
-            {data.recent.map((r, i) => (
-              <div key={i} className="adm-stream-row">
-                <span className={`adm-etype adm-etype-${r.type}`}>{r.type}</span>
-                <span className="adm-ename">{r.name}</span>
-                <span className="adm-dim">{r.email ?? r.city ?? r.session_id.slice(0, 8)}</span>
-                <span className="adm-dim">{rel(r.at)}</span>
+          {tab === "players" && (
+            <>
+              <div className="adm-row">
+                <input className="adm-token" placeholder="🔎 search email / country / wallet / ip…" value={q} onChange={(e) => setQ(e.target.value)} />
+                <select className="adm-mini-sel" value={sortKey} onChange={(e) => setSortKey(e.target.value as any)}>
+                  <option value="last_seen">recent</option>
+                  <option value="total_clicks">clicks</option>
+                  <option value="total_events">events</option>
+                  <option value="email">email</option>
+                  <option value="country">country</option>
+                </select>
+                <button className="adm-btn" onClick={exportCsv}>⬇ CSV</button>
               </div>
-            ))}
-          </div>
+              <table className="adm-table adm-players">
+                <thead><tr><th>Player</th><th>Location</th><th>Clicks</th><th>Seen</th></tr></thead>
+                <tbody>
+                  {filteredSessions.map((s) => (
+                    <tr key={s.session_id} className="adm-click-row" onClick={() => void openDrill(s.session_id)}
+                        title={`${s.ip ?? "?"} · ${s.isp ?? ""}\n${s.user_agent ?? ""}`}>
+                      <td>
+                        <div className="adm-pl-email">{s.email ?? <span className="adm-dim">anon player</span>}</div>
+                        <div className="adm-dim adm-pl-sub">{s.wallet_address ? shortAddr(s.wallet_address) : s.session_id.slice(0, 12)}</div>
+                      </td>
+                      <td>{flag(s.country_code)} {[s.city, s.country].filter(Boolean).join(", ") || <span className="adm-dim">—</span>}</td>
+                      <td>{s.total_clicks}</td>
+                      <td>{rel(s.last_seen)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filteredSessions.length === 0 && <p className="adm-note">No players match.</p>}
+            </>
+          )}
+
+          {tab === "live" && (
+            <>
+              <div className="adm-row">
+                <select className="adm-mini-sel" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                  <option value="all">all types</option>
+                  <option value="click">click</option>
+                  <option value="action">action</option>
+                  <option value="pageview">pageview</option>
+                  <option value="session_start">session_start</option>
+                </select>
+                <button className={`adm-btn ${paused ? "hot" : ""}`} onClick={() => setPaused((p) => !p)}>
+                  {paused ? "▶ Resume" : "⏸ Pause"}
+                </button>
+                <span className="adm-dim adm-small">{liveRows.length} shown{autoMs ? "" : " · turn on auto-refresh"}</span>
+              </div>
+              <div className="adm-stream">
+                {liveRows.map((r, i) => (
+                  <div key={i} className="adm-stream-row">
+                    <span className="adm-etype" style={{ color: etColor(r.type) }}>{r.type}</span>
+                    <span className="adm-ename">{r.name}</span>
+                    <span className="adm-dim adm-small">{flag(r.code)} {r.email ?? r.city ?? r.session_id.slice(0, 8)}</span>
+                    <span className="adm-dim adm-small">{rel(r.at)}</span>
+                  </div>
+                ))}
+                {liveRows.length === 0 && <p className="adm-note">No events for this filter.</p>}
+              </div>
+            </>
+          )}
+
+          {tab === "geo" && (
+            <>
+              <h5 className="adm-h5">Players by country</h5>
+              <BarList
+                max={maxCountry}
+                rows={data.byCountry.map((c) => ({ key: c.country, label: <span>{flag(c.code)} {c.country}</span>, count: c.count }))}
+              />
+            </>
+          )}
         </>
       )}
-      <p className="adm-note adm-dim">This device's session id: {currentSessionId().slice(0, 13)}…</p>
+
+      {/* player drill-down */}
+      {drillId && (
+        <div className="adm-drill-backdrop" onClick={() => { setDrillId(null); setDrill(null); }}>
+          <div className="adm-drill" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{drill?.session?.email ?? "Player"} <span className="adm-dim adm-small">{flag(drill?.session?.country_code)}</span></h3>
+              <button className="chip-btn" onClick={() => { setDrillId(null); setDrill(null); }}>✕</button>
+            </div>
+            {!drill ? (
+              <p className="adm-note">Loading…</p>
+            ) : (
+              <>
+                <div className="adm-grid">
+                  <Stat k="Email" v={drill.session?.email ?? "—"} />
+                  <Stat k="Wallet" v={shortAddr(drill.session?.wallet_address ?? null)} />
+                  <Stat k="Location" v={[drill.session?.city, drill.session?.region, drill.session?.country].filter(Boolean).join(", ") || "—"} />
+                  <Stat k="IP" v={drill.session?.ip ?? "—"} />
+                  <Stat k="ISP" v={drill.session?.isp ?? "—"} />
+                  <Stat k="Timezone" v={drill.session?.timezone ?? "—"} />
+                  <Stat k="Clicks" v={drill.session?.total_clicks ?? 0} />
+                  <Stat k="First seen" v={rel(drill.session?.first_seen)} />
+                </div>
+                <p className="adm-note adm-dim adm-small">{drill.session?.user_agent}</p>
+                <h5 className="adm-h5">Event history ({drill.events.length})</h5>
+                <div className="adm-stream adm-drill-stream">
+                  {drill.events.map((ev, i) => (
+                    <div key={i} className="adm-stream-row">
+                      <span className="adm-etype" style={{ color: etColor(ev.event_type) }}>{ev.event_type}</span>
+                      <span className="adm-ename">{ev.event_name}</span>
+                      <span className="adm-dim adm-small">{rel(ev.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      <p className="adm-note adm-dim adm-small">This device's session id: {currentSessionId().slice(0, 13)}…</p>
     </Section>
   );
 }
