@@ -129,9 +129,18 @@ const flag = (code: string | null | undefined) => {
 // Event types render in a fixed categorical order (validated blue/green/magenta/
 // yellow), always paired with the type word so identity is never color-alone.
 const ETYPE_COLOR: Record<string, string> = {
-  click: "#3987e5", action: "#008300", pageview: "#d55181", session_start: "#c98500",
+  click: "#3987e5", action: "#008300", pageview: "#d55181", session_start: "#c98500", login: "#9085e9",
 };
 const etColor = (t: string) => ETYPE_COLOR[t] ?? "#8a819c";
+
+// seconds -> "1h 3m" / "4m 12s" / "45s"
+const fmtDur = (sec: number | null | undefined) => {
+  const s = Math.round(sec ?? 0);
+  if (s <= 0) return "0s";
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+};
 
 const shortAddr = (a: string | null) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—");
 const csvCell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -314,6 +323,7 @@ function TelemetrySection() {
             <div className="adm-kpi"><b>{num(data.totals.clicks)}</b><small>clicks</small></div>
             <div className="adm-kpi"><b>{num(data.totals.events)}</b><small>events</small></div>
             <div className="adm-kpi"><b>{num(data.totals.countries)}</b><small>countries</small></div>
+            <div className="adm-kpi"><b>{fmtDur(data.totals.avgActiveSec)}</b><small>avg time</small></div>
           </div>
 
           {/* dashboard tabs */}
@@ -368,17 +378,18 @@ function TelemetrySection() {
                 <button className="adm-btn" onClick={exportCsv}>⬇ CSV</button>
               </div>
               <table className="adm-table adm-players">
-                <thead><tr><th>Player</th><th>Location</th><th>Clicks</th><th>Seen</th></tr></thead>
+                <thead><tr><th>Player</th><th>Location</th><th>Clicks</th><th>Time</th><th>Seen</th></tr></thead>
                 <tbody>
                   {filteredSessions.map((s) => (
                     <tr key={s.session_id} className="adm-click-row" onClick={() => void openDrill(s.session_id)}
-                        title={`${s.ip ?? "?"} · ${s.isp ?? ""}\n${s.user_agent ?? ""}`}>
+                        title={`${s.ip ?? "?"} · ${s.isp ?? ""}\n${s.visits} visit(s) · ${s.user_agent ?? ""}`}>
                       <td>
                         <div className="adm-pl-email">{s.email ?? <span className="adm-dim">anon player</span>}</div>
                         <div className="adm-dim adm-pl-sub">{s.wallet_address ? shortAddr(s.wallet_address) : s.session_id.slice(0, 12)}</div>
                       </td>
                       <td>{flag(s.country_code)} {[s.city, s.country].filter(Boolean).join(", ") || <span className="adm-dim">—</span>}</td>
                       <td>{s.total_clicks}</td>
+                      <td title={`${s.visits} visit(s)`}>{fmtDur(s.active_seconds)}</td>
                       <td>{rel(s.last_seen)}</td>
                     </tr>
                   ))}
@@ -397,6 +408,7 @@ function TelemetrySection() {
                   <option value="action">action</option>
                   <option value="pageview">pageview</option>
                   <option value="session_start">session_start</option>
+                  <option value="login">login</option>
                 </select>
                 <button className={`adm-btn ${paused ? "hot" : ""}`} onClick={() => setPaused((p) => !p)}>
                   {paused ? "▶ Resume" : "⏸ Pause"}
@@ -448,10 +460,25 @@ function TelemetrySection() {
                   <Stat k="IP" v={drill.session?.ip ?? "—"} />
                   <Stat k="ISP" v={drill.session?.isp ?? "—"} />
                   <Stat k="Timezone" v={drill.session?.timezone ?? "—"} />
-                  <Stat k="Clicks" v={drill.session?.total_clicks ?? 0} />
-                  <Stat k="First seen" v={rel(drill.session?.first_seen)} />
+                  <Stat k="Total clicks" v={drill.session?.total_clicks ?? 0} />
+                  <Stat k="Active time" v={fmtDur(drill.session?.active_seconds)} />
+                  <Stat k="Visits" v={drill.session?.visits ?? 0} />
+                  <Stat k="Last visit" v={fmtDur(drill.session?.last_visit_seconds)} />
+                  <Stat k="Logged in" v={drill.session?.last_login ? new Date(drill.session.last_login).toLocaleString() : "never"} />
+                  <Stat k="First seen" v={drill.session?.first_seen ? new Date(drill.session.first_seen).toLocaleString() : "—"} />
                 </div>
                 <p className="adm-note adm-dim adm-small">{drill.session?.user_agent}</p>
+
+                <h5 className="adm-h5">🖱 Buttons clicked ({drill.buttonCounts.length})</h5>
+                <BarList
+                  max={drill.buttonCounts[0]?.count ?? 0}
+                  rows={drill.buttonCounts.slice(0, 15).map((b) => ({
+                    key: b.name,
+                    label: <span><i className="adm-swatch" style={{ background: etColor(b.type) }} />{b.name}</span>,
+                    count: b.count,
+                  }))}
+                />
+
                 <h5 className="adm-h5">Event history ({drill.events.length})</h5>
                 <div className="adm-stream adm-drill-stream">
                   {drill.events.map((ev, i) => (

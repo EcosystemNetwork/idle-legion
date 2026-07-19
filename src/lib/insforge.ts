@@ -58,6 +58,11 @@ export function isOperator(): boolean {
   return getCachedMirror().serial != null;
 }
 
+/** Persist a serial discovered via cross-device ownership sync (operator-feed). */
+export function rememberMirror(serial: number) {
+  cacheMirror({ serial, soldOut: false });
+}
+
 // ---- fetch wrapper -----------------------------------------------------------
 
 async function callFn<T>(slug: string, body: Record<string, unknown>): Promise<T> {
@@ -72,7 +77,13 @@ async function callFn<T>(slug: string, body: Record<string, unknown>): Promise<T
 
 // ---- Scrying Mirror claim ----------------------------------------------------
 
-export type ClaimStatus = "claimed" | "already" | "sold_out" | "error";
+export type ClaimStatus =
+  | "claimed"
+  | "already"
+  | "sold_out"
+  | "rate_limited"
+  | "needs_identity"
+  | "error";
 export interface ClaimResult {
   status: ClaimStatus;
   serial: number | null;
@@ -81,9 +92,13 @@ export interface ClaimResult {
   message?: string;
 }
 
-/** Attempt the day-8 mirror claim. Caches the outcome so we never re-mint. */
-export async function claimMirror(): Promise<ClaimResult> {
-  const result = await callFn<ClaimResult>("claim-mirror", {});
+/**
+ * Attempt the day-8 mirror claim. Requires a verified `identity` (wallet address
+ * or Magic email) — the launch-grade anti-sybil gate; one mirror per account.
+ * Caches the outcome so we never re-mint.
+ */
+export async function claimMirror(identity?: string): Promise<ClaimResult> {
+  const result = await callFn<ClaimResult>("claim-mirror", { identity: identity ?? "" });
   if (result.status === "claimed" || result.status === "already") {
     cacheMirror({ serial: result.serial, soldOut: false });
   } else if (result.status === "sold_out") {
@@ -112,8 +127,8 @@ export interface FeedResult {
   missions: OperatorMission[];
 }
 
-export function operatorFeed(): Promise<FeedResult> {
-  return callFn<FeedResult>("operator-feed", {});
+export function operatorFeed(identity?: string): Promise<FeedResult> {
+  return callFn<FeedResult>("operator-feed", { identity: identity ?? "" });
 }
 
 export type CompleteStatus =
@@ -133,6 +148,14 @@ export interface CompleteResult {
 }
 
 /** Complete a mission. Ciphers require the right `answer` (checked server-side). */
-export function completeMission(code: string, answer?: string): Promise<CompleteResult> {
-  return callFn<CompleteResult>("complete-mission", { code, answer: answer ?? "" });
+export function completeMission(
+  code: string,
+  answer?: string,
+  identity?: string,
+): Promise<CompleteResult> {
+  return callFn<CompleteResult>("complete-mission", {
+    code,
+    answer: answer ?? "",
+    identity: identity ?? "",
+  });
 }

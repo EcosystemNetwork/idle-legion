@@ -83,6 +83,14 @@ export default async function (req: Request): Promise<Response> {
   const userAgent = req.headers.get("user-agent")?.slice(0, 512) ?? null;
   const clientTz = body.timezone ? String(body.timezone).slice(0, 64) : null;
 
+  // Engagement time reported by the client this flush (active/tab-focused only).
+  // Clamp defensively so a bad clock can't inject a huge span.
+  const deltaSec = Math.min(3600, Math.max(0, Number(body.activeMs) / 1000 || 0));
+  const newVisit = body.newVisit === true;
+  // A login event in the batch stamps last_login.
+  const loginEvent = events.find((e) => e?.type === "login");
+  const loginTs = loginEvent ? new Date(loginEvent.ts ?? Date.now()).toISOString() : null;
+
   const admin = createAdminClient({
     baseUrl: Deno.env.get("INSFORGE_BASE_URL"),
     apiKey: Deno.env.get("API_KEY"),
@@ -96,7 +104,7 @@ export default async function (req: Request): Promise<Response> {
   // Fetch prior rollups so first_seen and running totals survive.
   const { data: prior } = await admin.database
     .from("analytics_sessions")
-    .select("total_events,total_clicks,first_seen")
+    .select("total_events,total_clicks,first_seen,active_seconds,visits,last_visit_seconds,last_login")
     .eq("session_id", sessionId)
     .maybeSingle();
 
@@ -108,6 +116,11 @@ export default async function (req: Request): Promise<Response> {
     user_agent: userAgent,
     ip: ip || null,
     timezone: geo?.timezone ?? clientTz,
+    // engagement rollups
+    active_seconds: (prior?.active_seconds ?? 0) + deltaSec,
+    visits: (prior?.visits ?? 0) + (newVisit || !prior ? 1 : 0),
+    last_visit_seconds: newVisit ? deltaSec : (prior?.last_visit_seconds ?? 0) + deltaSec,
+    last_login: loginTs ?? prior?.last_login ?? null,
     ...(prior ? {} : { first_seen: nowIso }),
     ...(email ? { email } : {}),
     ...(wallet ? { wallet_address: wallet } : {}),

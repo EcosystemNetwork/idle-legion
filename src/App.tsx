@@ -7,6 +7,7 @@ const BossStage = lazy(() => import("./components/BossStage"));
 // Dev/admin "see everything" overlay — code-split so it never ships in the main view.
 const AdminPanel = lazy(() => import("./components/AdminPanel"));
 import KingdomMap from "./components/KingdomMap";
+import { INTERIOR } from "./game/interiors";
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
@@ -19,11 +20,16 @@ import {
   IMG,
   KEKIUS_MODEL,
   KIT,
+  LAND_KIND_META,
+  LAND_MIN_MIGHT,
+  LAND_SLOTS,
+  LAND_YIELD,
   MERCENARY_TIERS,
   MIGHT_PER_LEVEL,
   MILESTONE_EVERY,
   ONCHAIN_LISTINGS,
   OUTPUT_PER_LEVEL,
+  PVP_DAILY_ATTACKS,
   RAIDS,
   RAID_ART,
   RARITY_META,
@@ -32,6 +38,7 @@ import {
   ROOM_ART,
   TIERS,
   TIER_PORTRAIT,
+  WB_HIT_COOLDOWN_MS,
   xpForLevel,
 } from "./game/config";
 import {
@@ -44,12 +51,16 @@ import {
   arenaClassEdge,
   arenaSquad,
   arenaSquadPower,
+  bankPending,
+  bankWithdrawFee,
   buildCost,
   canDescend,
+  canSummonWith,
   classMultiplierVs,
   currentBoss,
   dailyAvailable,
   dailyReward,
+  dexPrice,
   dwellerById,
   dwellerClass,
   dwellerMaxHp,
@@ -69,10 +80,18 @@ import {
   idleDwellers,
   inventoryGear,
   isOnRaid,
+  landClaimCost,
+  landSlotsLeft,
+  landUpgradeCost,
+  landYields,
   marketRerollCost,
   objectiveLabel,
   objectiveProgress,
   pendingRenown,
+  pvpOpponents,
+  pvpRankName,
+  quoteGoldToLegion,
+  quoteLegionToGold,
   raidSquadMight,
   recruitCost,
   renownBoost,
@@ -83,19 +102,25 @@ import {
   squadClassEdge,
   squadPower,
   staminaFrac,
+  summonCost,
+  summonsUsed,
   upgradeCost,
   warChestStoreCap,
+  worldBossLeaderboard,
+  worldBossName,
+  worldBossRank,
   xpProgress,
   type Pull,
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { CombatClass, Dweller, GameState, GearItem, GearSlot, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
+import type { CombatClass, Dweller, GameState, GearItem, GearSlot, LandKind, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
 import {
   claimMirror,
   completeMission,
   getCachedMirror,
   operatorFeed,
+  rememberMirror,
   type CompleteResult,
   type MirrorStatus,
   type OperatorMission,
@@ -110,7 +135,7 @@ import {
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
-import { flush, identify, initTelemetry } from "./lib/telemetry";
+import { flush, identify, initTelemetry, markLogin } from "./lib/telemetry";
 
 const GOLD_CHIP = ".chip-stat.gold";
 
@@ -118,7 +143,7 @@ function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "market" | "codex" | "operator";
+type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "worldboss" | "duels" | "exchange" | "realm" | "market" | "codex" | "operator";
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
@@ -245,7 +270,7 @@ function ModelBoss({ src }: { src: string }) {
 
 export default function App() {
   const game = useGame();
-  const { state, stats, error: gameError, now, actions } = game;
+  const { state, stats, error: gameError, now, actions, syncIdentity } = game;
   const wallet = useWallet();
   const [tab, setTab] = useState<Tab>("kingdom");
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
@@ -271,22 +296,35 @@ export default function App() {
     return () => void flush(true);
   }, []);
 
-  // Report the player's identity whenever the wallet session changes.
+  // Report identity + fire a one-time login event when the wallet connects.
+  // Also repoint cloud saves at the player's identity so progress roams across
+  // devices once signed in (and falls back to the device key when signed out).
   useEffect(() => {
-    identify({
-      email: wallet.session?.email ?? null,
-      walletAddress: wallet.session?.address ?? null,
-    });
-  }, [wallet.session]);
+    if (wallet.session) {
+      markLogin(wallet.session.email ?? null, wallet.session.address);
+      syncIdentity({ email: wallet.session.email ?? null, walletAddress: wallet.session.address });
+    } else {
+      identify({ email: null, walletAddress: null });
+      syncIdentity({ email: null, walletAddress: null });
+    }
+  }, [wallet.session, syncIdentity]);
 
   // Attempt the day-8 Scrying Mirror claim. Network-resilient: any failure leaves
   // the streak intact and the retry prompt visible, so a flaky connection or a
   // backend blip never costs the player their relic.
+  // Verified identity for anti-sybil binding: the connected wallet/Magic address.
+  const walletIdentity = wallet.session?.address?.toLowerCase();
+
   const attemptMirror = useCallback(async () => {
     if (mirrorBusy || mirror.serial != null || mirror.soldOut) return;
+    // The scarce relic requires a verified account (launch-grade anti-sybil).
+    if (!walletIdentity) {
+      setMirrorReveal({ status: "needs_identity" });
+      return;
+    }
     setMirrorBusy(true);
     try {
-      const res = await claimMirror();
+      const res = await claimMirror(walletIdentity);
       setMirror(getCachedMirror());
       if (res.status === "claimed") {
         setMirrorReveal({ status: "claimed", serial: res.serial, remaining: res.remaining, total: res.total });
@@ -295,6 +333,8 @@ export default function App() {
         setMirrorReveal({ status: "sold_out" });
       } else if (res.status === "rate_limited") {
         setMirrorReveal({ status: "rate_limited" });
+      } else if (res.status === "needs_identity") {
+        setMirrorReveal({ status: "needs_identity" });
       }
       // "already" → we hold it; UI already reflects it, no modal.
     } catch {
@@ -302,7 +342,25 @@ export default function App() {
     } finally {
       setMirrorBusy(false);
     }
-  }, [mirrorBusy, mirror.serial, mirror.soldOut, actions]);
+  }, [mirrorBusy, mirror.serial, mirror.soldOut, actions, walletIdentity]);
+
+  // Cross-device ownership sync: when an account connects, ask the mirror whether
+  // this identity already holds one (claimed on another device) — no minting.
+  useEffect(() => {
+    if (!walletIdentity || mirror.serial != null) return;
+    let cancelled = false;
+    operatorFeed(walletIdentity)
+      .then((res) => {
+        if (!cancelled && res.operator && res.serial != null) {
+          rememberMirror(res.serial);
+          setMirror({ serial: res.serial, soldOut: false });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [walletIdentity, mirror.serial]);
 
   // Claim the daily tribute, then layer on the streak milestones: the day-8
   // Scrying Mirror (async, capped supply) and the day-69 jackpot.
@@ -376,7 +434,20 @@ export default function App() {
 
       <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} onOpenBox={openBox} onHealAll={actions.healAll} />
 
-      <DailyBanner state={state} now={now} onClaim={actions.claimDaily} />
+      <DailyBanner state={state} now={now} onClaim={handleClaimDaily} />
+
+      {state.daily.streak >= MIRROR_STREAK_DAY && mirror.serial == null && !mirror.soldOut && (
+        <div className="banner mirror-prompt" role="status">
+          <span className="daily-icon">🔮</span>
+          <strong>The Scrying Mirror awaits</strong>
+          <span className="muted small">
+            Day {state.daily.streak} reached — a limited relic ({SCRYING_MIRROR_SUPPLY} ever made). Claim yours.
+          </span>
+          <button type="button" className="btn" disabled={mirrorBusy} onClick={() => void attemptMirror()}>
+            {mirrorBusy ? "Scrying…" : "Claim Mirror"}
+          </button>
+        </div>
+      )}
 
       {state.incident && (
         <div className="banner incident" role="alert">
@@ -396,6 +467,10 @@ export default function App() {
             ["legion", "🛡️ Legion"],
             ["arena", "⚔️ Arena"],
             ["raids", "🗺️ Raids"],
+            ["worldboss", "🐉 World Boss"],
+            ["duels", "🏟️ Duels"],
+            ["exchange", "💱 Exchange"],
+            ["realm", "🗺️ Realm"],
             ["market", "🏛️ Market"],
             ["codex", "📜 Codex"],
           ] as const
@@ -404,8 +479,15 @@ export default function App() {
             {label}
             {id === "market" && state.mercenaryBoost > 0 && <i className="dot" />}
             {id === "legion" && state.lunchboxes > 0 && <i className="dot gift" />}
+            {id === "duels" && state.pvp.attacksLeft > 0 && <i className="dot gift" />}
+            {id === "worldboss" && state.worldBoss.lastReward && <i className="dot" />}
           </button>
         ))}
+        {mirror.serial != null && (
+          <button className={`op-tab ${tab === "operator" ? "active" : ""}`} onClick={() => setTab("operator")}>
+            🔮 Operator
+          </button>
+        )}
       </nav>
 
       {(gameError || wallet.error) && (
@@ -446,6 +528,14 @@ export default function App() {
 
       {tab === "raids" && <RaidsView state={state} now={now} actions={actions} />}
 
+      {tab === "worldboss" && <WorldBossView game={game} />}
+
+      {tab === "duels" && <DuelsView state={state} actions={actions} />}
+
+      {tab === "exchange" && <ExchangeView state={state} now={now} actions={actions} />}
+
+      {tab === "realm" && <RealmView state={state} stats={stats} actions={actions} />}
+
       {tab === "market" && (
         <MarketView
           state={state}
@@ -459,6 +549,10 @@ export default function App() {
       )}
 
       {tab === "codex" && <CodexView />}
+
+      {tab === "operator" && mirror.serial != null && (
+        <OperatorView serial={mirror.serial} actions={actions} identity={walletIdentity} />
+      )}
 
       {assignRoom && (
         <AssignModal
@@ -493,6 +587,19 @@ export default function App() {
       )}
 
       <LevelUpLayer events={state.levelUps} onDrain={() => actions.clearLevelUps()} />
+
+      {mirrorReveal && (
+        <MirrorModal
+          reveal={mirrorReveal}
+          onClose={() => setMirrorReveal(null)}
+          onOperator={() => {
+            setMirrorReveal(null);
+            setTab("operator");
+          }}
+        />
+      )}
+
+      {jackpot && <JackpotModal onClose={() => setJackpot(false)} />}
 
       <footer className="foot">
         <p>
@@ -558,6 +665,12 @@ function ResourceBar({
         img={KIT.res.crystal}
         v={formatNum(state.salves)}
         s={`⛑ ${stats.salvesPerSec >= 0 ? "+" : ""}${stats.salvesPerSec.toFixed(2)}/s`}
+      />
+      <Chip
+        cls="legion-tok"
+        icon="💠"
+        v={formatNum(state.legion)}
+        s={`$LEGION ${stats.legionPerSec > 0 ? `+${stats.legionPerSec.toFixed(2)}/s` : ""}`.trim()}
       />
       <Chip cls="pop" icon="🛡️" v={`${stats.population}/${maxPopulation(state)}`} s={`${stats.idleCount} idle`} />
       <Chip cls="might" icon="⚔️" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
@@ -845,6 +958,237 @@ function DailyBanner({ state, now, onClaim }: { state: GameState; now: number; o
   );
 }
 
+// ---------------- Scrying Mirror reveal + day-69 jackpot ----------------
+
+function MirrorModal({
+  reveal,
+  onClose,
+  onOperator,
+}: {
+  reveal: { status: string; serial?: number | null; remaining?: number; total?: number };
+  onClose: () => void;
+  onOperator: () => void;
+}) {
+  useEffect(() => {
+    if (reveal.status !== "claimed") return;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight * 0.4;
+    shake(12);
+    ring(cx, cy, "#b072ff", 30);
+    burst(cx, cy, { color: "#c9a3ff", count: 44, kind: "shard", power: 9 });
+    burst(cx, cy, { color: "#fff0b0", count: 20, kind: "spark", power: 6 });
+    sfx.legendary();
+  }, [reveal.status]);
+
+  let body: React.ReactNode;
+  if (reveal.status === "claimed") {
+    body = (
+      <>
+        <div className="mirror-orb" aria-hidden>🔮</div>
+        <div className="reveal-title" style={{ color: "#c9a3ff" }}>Scrying Mirror #{reveal.serial}</div>
+        <div className="reveal-sub">
+          {reveal.remaining != null && reveal.total != null
+            ? `${reveal.remaining} of ${reveal.total} mirrors remain.`
+            : "A limited relic of the deep."}
+          <br />You are now an <strong>Operator</strong> — the mirror will show you secret missions.
+        </div>
+        <div className="reveal-actions">
+          <button className="btn secondary" onClick={onClose}>Later</button>
+          <button className="btn" onClick={onOperator}>Open Operator board ▸</button>
+        </div>
+      </>
+    );
+  } else if (reveal.status === "sold_out") {
+    body = (
+      <>
+        <div className="mirror-orb dim" aria-hidden>🔮</div>
+        <div className="reveal-title">The last mirror is claimed, ser.</div>
+        <div className="reveal-sub">
+          All {SCRYING_MIRROR_SUPPLY} Scrying Mirrors are gone. A consolation is paid — keep your
+          streak alive to <strong>day {JACKPOT_STREAK_DAY}</strong> for the real send.
+        </div>
+        <div className="reveal-actions"><button className="btn" onClick={onClose}>Onward</button></div>
+      </>
+    );
+  } else if (reveal.status === "rate_limited") {
+    body = (
+      <>
+        <div className="mirror-orb dim" aria-hidden>🔮</div>
+        <div className="reveal-title">Too many claims from your network</div>
+        <div className="reveal-sub">The deep guards against greed. Try again tomorrow — your streak is safe.</div>
+        <div className="reveal-actions"><button className="btn" onClick={onClose}>Understood</button></div>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <div className="mirror-orb dim" aria-hidden>🔮</div>
+        <div className="reveal-title">The deep is unreachable</div>
+        <div className="reveal-sub">Couldn't reach the mirror. Your streak is safe — try claiming again in a moment.</div>
+        <div className="reveal-actions"><button className="btn" onClick={onClose}>Close</button></div>
+      </>
+    );
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal reveal mirror-modal" onClick={(e) => e.stopPropagation()} style={{ ["--rar" as string]: "#b072ff" }}>
+        {body}
+      </div>
+    </div>
+  );
+}
+
+function JackpotModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight * 0.4;
+    shake(16);
+    ring(cx, cy, "#ffc233", 36);
+    burst(cx, cy, { color: "#ffe08a", count: 56, kind: "shard", power: 10 });
+    burst(cx, cy, { color: "#fff0b0", count: 30, kind: "spark", power: 7 });
+    sfx.legendary();
+  }, []);
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal reveal jackpot-modal" onClick={(e) => e.stopPropagation()} style={{ ["--rar" as string]: "#ffc233" }}>
+        <div className="reveal-title" style={{ color: "#ffc233" }}>DAY {JACKPOT_STREAK_DAY} — THE SEND</div>
+        <div className="reveal-sub">Sixty-nine days, never sold. Diamond hands only. The deep pays out:</div>
+        <div className="offline-rows">
+          <div className="offline-row"><span>🪙 Sestertii</span><b>+{formatNum(DAY69_JACKPOT.gold)}</b></div>
+          <div className="offline-row"><span>🎁 Lunchboxes</span><b>+{DAY69_JACKPOT.lunchboxes}</b></div>
+          <div className="offline-row"><span>👑 Champion gladiator</span><b>+{DAY69_JACKPOT.champions}</b></div>
+          <div className="offline-row"><span>⚔️ Grail gear</span><b>×{DAY69_JACKPOT.gear.length}</b></div>
+        </div>
+        <div className="reveal-actions"><button className="btn" onClick={onClose}>WAGMI</button></div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- Operator board (Scrying Mirror holders only) ----------------
+
+function OperatorView({ serial, actions, identity }: { serial: number; actions: Actions; identity?: string }) {
+  const [feed, setFeed] = useState<OperatorMission[] | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [flash, setFlash] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoadErr(null);
+    try {
+      const res = await operatorFeed(identity);
+      setFeed(res.missions ?? []);
+    } catch {
+      setLoadErr("The mirror is clouded — couldn't reach the deep.");
+    }
+  }, [identity]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const doComplete = async (m: OperatorMission) => {
+    if (busy) return;
+    setBusy(m.code);
+    setFlash(null);
+    try {
+      const res: CompleteResult = await completeMission(m.code, answers[m.code] ?? "");
+      if (res.status === "complete" && res.reward) {
+        actions.grantBundle({
+          gold: res.reward.gold,
+          lunchboxes: res.reward.boxes,
+          gear: res.reward.gear ? [res.reward.gear] : [],
+        });
+        const cx = window.innerWidth / 2;
+        const cy = window.innerHeight * 0.35;
+        ring(cx, cy, "#b072ff", 22);
+        burst(cx, cy, { color: "#c9a3ff", count: 24, kind: "spark", power: 6 });
+        sfx.reveal();
+        setFlash(
+          `✓ ${m.title} — +${formatNum(res.reward.gold)}🪙${res.reward.boxes ? ` +${res.reward.boxes}🎁` : ""}${res.reward.gear ? " + gear" : ""}`,
+        );
+        await refresh();
+      } else if (res.status === "wrong") {
+        setFlash("✗ The mirror rejects that answer.");
+        sfx.error();
+        shake(6);
+      } else if (res.status === "already_done") {
+        setFlash("Already claimed.");
+        await refresh();
+      } else {
+        setFlash("The mirror could not confirm it.");
+      }
+    } catch {
+      setFlash("Couldn't reach the deep. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="panel operator">
+      <div className="op-hero">
+        <div className="op-hero-body">
+          <h2>🔮 The Scrying Mirror</h2>
+          <p className="muted">
+            Operator <strong>#{serial}</strong> of {SCRYING_MIRROR_SUPPLY}. The mirror shows what the deep
+            hides — secret missions only its holders can see.
+          </p>
+        </div>
+      </div>
+
+      {flash && <div className="op-flash">{flash}</div>}
+      {loadErr && (
+        <div className="banner error" role="alert">
+          {loadErr}
+          <button type="button" className="btn ghost" onClick={() => void refresh()}>retry</button>
+        </div>
+      )}
+      {feed == null && !loadErr && <p className="muted small">The mirror is focusing…</p>}
+      {feed != null && feed.length === 0 && !loadErr && (
+        <p className="muted small">No visions right now. The mirror will show more in time.</p>
+      )}
+
+      <div className="op-grid">
+        {(feed ?? []).map((m) => (
+          <article key={m.id} className={`op-mission ${m.kind} ${m.completed ? "done" : ""}`}>
+            <div className="op-kind">{m.kind === "vision" ? "👁 VISION" : "🔑 CIPHER"}</div>
+            <h3>{m.title}</h3>
+            <p className="op-brief">{m.brief}</p>
+            <div className="op-reward muted small">
+              Reward: 🪙 {formatNum(m.rewardGold)}
+              {m.rewardBoxes ? ` · ${m.rewardBoxes}🎁` : ""}
+              {m.rewardGear ? " · ⚔️ gear" : ""}
+            </div>
+            {m.completed ? (
+              <div className="op-done">✓ Completed</div>
+            ) : m.kind === "cipher" ? (
+              <div className="op-answer">
+                <input
+                  type="text"
+                  value={answers[m.code] ?? ""}
+                  placeholder="speak the answer…"
+                  onChange={(e) => setAnswers((a) => ({ ...a, [m.code]: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === "Enter") void doComplete(m); }}
+                />
+                <button type="button" className="btn" disabled={busy === m.code} onClick={() => void doComplete(m)}>
+                  {busy === m.code ? "…" : "Decode"}
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="btn" disabled={busy === m.code} onClick={() => void doComplete(m)}>
+                {busy === m.code ? "…" : "Claim vision"}
+              </button>
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // ---------------- raid after-action report (exploration log) ----------------
 
 function RaidReportModal({ report, onClose }: { report: RaidReport; onClose: () => void }) {
@@ -1059,7 +1403,7 @@ function Chamber({
           <ModelBoss src={KEKIUS_MODEL} />
         </div>
       ) : (
-        <img className="ch-art" src={ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
+        <img className="ch-art" src={INTERIOR[room.type] ?? ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
       )}
       <div className="ch-glow" aria-hidden />
 
@@ -1216,6 +1560,7 @@ function LegionView({
   return (
     <section className="panel legion">
       <Objectives state={state} actions={actions} onOpenBox={onOpenBox} />
+      <SummoningPanel state={state} actions={actions} />
       <div className="panel-head">
         <h2>🛡️ The Legion · {state.dwellers.length}/{maxPopulation(state)}</h2>
         <button type="button" className="btn" disabled={full || state.gold < cost} onClick={() => actions.recruit()}>
@@ -1993,6 +2338,361 @@ function CodexView() {
           </div>
         );
       })}
+    </section>
+  );
+}
+
+// ---------------- Summoning Portal (genetic breeding) ----------------
+
+function SummoningPanel({ state, actions }: { state: GameState; actions: Actions }) {
+  const [a, setA] = useState<string | null>(null);
+  const [b, setB] = useState<string | null>(null);
+  const now = Date.now();
+  const hasPortal = state.rooms.some((r) => r.type === "portal");
+  const eligible = state.dwellers.filter((d) => (d.summonsLeft ?? 0) > 0 && !isOnRaid(state, d.id) && !d.downed);
+  const pa = (a ? dwellerById(state, a) : null) ?? null;
+  const pb = (b ? dwellerById(state, b) : null) ?? null;
+  const cost = pa && pb ? summonCost(pa, pb) : null;
+  const ready = pa && pb && canSummonWith(state, pa, now) && canSummonWith(state, pb, now);
+  const afford = cost ? state.gold >= cost.gold && state.legion >= cost.legion : false;
+
+  if (!hasPortal) {
+    return (
+      <div className="summon-panel locked">
+        <span className="build-label">🌀 SUMMONING PORTAL</span>
+        <p className="muted small">Dig a <strong>Summoning Portal</strong> in the Stronghold to breed two gladiators' bloodlines into new-blood — genes, class and all.</p>
+      </div>
+    );
+  }
+
+  const pick = (id: string) => {
+    if (a === id) return setA(null);
+    if (b === id) return setB(null);
+    if (!a) return setA(id);
+    if (!b) return setB(id);
+    setB(id);
+  };
+
+  const doSummon = () => {
+    if (!a || !b) return;
+    actions.summon(a, b);
+    setA(null);
+    setB(null);
+  };
+
+  const ParentCard = ({ d, slot }: { d: Dweller | null; slot: string }) => (
+    <div className={`summon-slot ${d ? "filled" : ""}`}>
+      {d ? (
+        <>
+          <img src={TIER_PORTRAIT[d.tier]} alt={d.name} />
+          <div className="ss-info">
+            <b>{d.name}</b>
+            <span className="muted small">{TIERS[d.tier].name} · Gen {d.gen ?? 0} · {CLASS_ICON[dwellerClass(d)]}{APTITUDE_ICON[d.aptitude]}</span>
+            <span className="muted small">{d.summonsLeft ?? 0} summons left · used {summonsUsed(d)}</span>
+            {(d.summonReadyAt ?? 0) > now && <span className="warn small">fatigued {Math.ceil(((d.summonReadyAt ?? 0) - now) / 1000)}s</span>}
+          </div>
+        </>
+      ) : (
+        <span className="ss-empty">＋ pick {slot}</span>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="summon-panel">
+      <div className="obj-head">
+        <span>🌀 SUMMONING PORTAL · genetics &amp; new-blood</span>
+        {cost && <span className="muted small">Cost: 🪙 {formatNum(cost.gold)} + 💠 {formatNum(cost.legion)}</span>}
+      </div>
+      <div className="summon-slots">
+        <ParentCard d={pa} slot="parent A" />
+        <span className="summon-x">✕</span>
+        <ParentCard d={pb} slot="parent B" />
+        <button type="button" className="btn summon-go" disabled={!ready || !afford} onClick={doSummon}>
+          {!pa || !pb ? "Pick two" : !ready ? "Fatigued/busy" : !afford ? "Can't afford" : "🌀 Summon"}
+        </button>
+      </div>
+      <p className="muted small">Child inherits a shuffle of both parents' dominant &amp; recessive genes (rare traits can surface), with an 18% chance to mutate up a tier. Each summon fatigues the parents and burns a summon charge.</p>
+      <div className="summon-pool">
+        {eligible.length === 0 && <span className="muted small">No heroes with summon charges left. Recruit fresh Gen-0 blood.</span>}
+        {eligible.map((d) => {
+          const on = a === d.id || b === d.id;
+          const tired = (d.summonReadyAt ?? 0) > now;
+          return (
+            <button key={d.id} type="button" className={`summon-mini ${on ? "on" : ""} ${tired ? "tired" : ""}`} style={{ ["--rar" as string]: RARITY[d.tier].color }} onClick={() => pick(d.id)} title={`${d.name} · Gen ${d.gen ?? 0} · ${d.summonsLeft ?? 0} left`}>
+              <img src={TIER_PORTRAIT[d.tier]} alt={d.name} />
+              <span className="sm-gen">G{d.gen ?? 0}</span>
+              <span className="sm-left">{d.summonsLeft ?? 0}</span>
+              {on && <span className="sp-check">✓</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- World Boss (shared co-op + leaderboard) ----------------
+
+function WorldBossView({ game }: { game: Game }) {
+  const { state, now, actions } = game;
+  const wb = state.worldBoss;
+  const [flash, setFlash] = useState<string | null>(null);
+  const board = worldBossLeaderboard(state);
+  const rank = worldBossRank(state);
+  const hpFracB = wb.maxHp > 0 ? Math.max(0, wb.hp) / wb.maxHp : 0;
+  const cd = Math.max(0, WB_HIT_COOLDOWN_MS - (now - wb.lastHitAt));
+  const bossClass: CombatClass = (["melee", "ranged", "charge"] as CombatClass[])[(wb.tier - 1) % 3];
+  const squad = arenaSquad(state);
+  const daysLeft = Math.max(0, (wb.endsAt - now) / 86_400_000);
+
+  const onHit = () => {
+    const hit = game.hitWorldBoss();
+    if (!hit) { sfx.error(); return; }
+    const c = centerOf(document.querySelector(".wb-stage"));
+    shake(hit.killed ? 16 : 6);
+    burst(c.x, c.y, { color: hit.killed ? "#ff7a3d" : "#ffd76b", count: hit.killed ? 40 : 16, kind: "spark", power: hit.killed ? 9 : 5 });
+    floatText(c.x, c.y - 10, `-${formatNum(hit.damage)}`, { color: "#ffd76b", crit: hit.killed });
+    setFlash(hit.killed ? `💥 ${worldBossName(state)} FELLED! Cycle payout ↓` : `Struck for ${formatNum(hit.damage)}!`);
+    hit.killed ? sfx.boom() : sfx.hit();
+  };
+
+  return (
+    <section className="panel worldboss">
+      <div className="panel-head">
+        <h2>🐉 World Boss · shared raid</h2>
+        <div className="rank-chip">🏆 Rank #{rank} / {board.length} · tier {wb.tier}</div>
+      </div>
+
+      {wb.lastReward && (
+        <div className="banner daily wb-reward" role="status">
+          <span className="daily-icon">🏆</span>
+          <strong>{wb.lastReward.bossName} down!</strong>
+          <span className="muted small">Finished #{wb.lastReward.rank}/{wb.lastReward.field} · 🪙 {formatNum(wb.lastReward.gold)} + 💠 {formatNum(wb.lastReward.legion)}{wb.lastReward.lunchboxes ? ` + ${wb.lastReward.lunchboxes} 🎁` : ""}</span>
+          <button type="button" className="btn" onClick={() => actions.clearWorldBossReward()}>Collect</button>
+        </div>
+      )}
+
+      <div className="wb-stage" style={{ backgroundImage: `url(${currentBoss(state).img})` }}>
+        <div className="boss-veil" />
+        <div className="boss-body">
+          <div className="boss-name">{worldBossName(state)} <ClassBadge cls={bossClass} small /></div>
+          <div className="boss-hpbar wb">
+            <i style={{ width: `${hpFracB * 100}%` }} />
+            <b>{formatNum(Math.max(0, wb.hp))} / {formatNum(wb.maxHp)} HP</b>
+          </div>
+          {flash && <div className="boss-flash">{flash}</div>}
+          <div className="muted small">Cycle ends in {daysLeft.toFixed(1)}d · your damage {formatNum(wb.contributed)}</div>
+        </div>
+      </div>
+
+      <div className="wb-cols">
+        <div className="wb-left">
+          <SquadPicker state={state} actions={actions} enemyClass={bossClass} />
+          <div className="arena-controls">
+            <div className="squad-info">
+              <div className="squad-power">Squad <b>{Math.floor(arenaSquadPower(state))} ⚔</b></div>
+              <span className="muted small">Counter {CLASS_LABEL[bossClass]}; rivals chip the boss down 24/7 — climb the board before it dies.</span>
+            </div>
+            <button type="button" className="btn big" disabled={cd > 0 || squad.length === 0 || wb.hp <= 0} onClick={onHit}>
+              {cd > 0 ? `Rallying ${Math.ceil(cd / 1000)}s` : "🗡️ STRIKE"}
+            </button>
+          </div>
+        </div>
+        <div className="wb-board">
+          <h4 className="ml">Contribution leaderboard <span className="muted small">(simulated rivals)</span></h4>
+          {board.map((row, i) => (
+            <div key={row.name} className={`wb-row ${row.isYou ? "you" : ""}`}>
+              <span className="wb-rank">#{i + 1}</span>
+              <span className="wb-name">{row.isYou ? "⭐ " : ""}{row.name}</span>
+              <span className="wb-dmg">{formatNum(row.contributed)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------- PvP Duels (ranked ladder) ----------------
+
+function DuelsView({ state, actions }: { state: GameState; actions: Actions }) {
+  const pvp = state.pvp;
+  const opps = pvpOpponents(state);
+  const myPower = Math.floor(arenaSquadPower(state));
+  const res = pvp.lastResult;
+  return (
+    <section className="panel duels">
+      <div className="panel-head">
+        <h2>🏟️ Duels · ranked ladder <span className="muted small">(simulated)</span></h2>
+        <div className="rank-chip">🎖️ {pvpRankName(pvp.rating)} · {Math.round(pvp.rating)}</div>
+      </div>
+
+      <div className="pvp-stats">
+        <div className="pvp-stat"><b>{pvp.wins}</b><span>wins</span></div>
+        <div className="pvp-stat"><b>{pvp.losses}</b><span>losses</span></div>
+        <div className="pvp-stat"><b>{pvp.streak}</b><span>streak</span></div>
+        <div className="pvp-stat"><b>{pvp.attacksLeft}/{PVP_DAILY_ATTACKS}</b><span>duels left</span></div>
+        <div className="pvp-stat"><b>{myPower} ⚔</b><span>your squad</span></div>
+      </div>
+
+      {res && (
+        <div className={`banner ${res.won ? "daily" : "error"} duel-result`} role="status">
+          <strong>{res.won ? "⚔️ Victory" : "🩸 Defeat"} vs {res.oppName}</strong>
+          <span className="muted small">
+            {res.yourPower} vs {res.oppPower} ⚔ · {res.won ? "+" : ""}{res.ratingDelta} rating
+            {res.gold ? ` · 🪙 ${formatNum(res.gold)}` : ""}{res.legion ? ` · 💠 ${formatNum(res.legion)}` : ""}
+          </span>
+          <button type="button" className="btn" onClick={() => actions.clearDuelResult()}>OK</button>
+        </div>
+      )}
+
+      <SquadPicker state={state} actions={actions} />
+
+      <div className="duel-grid">
+        {opps.map((o) => {
+          const edge = classEdgeVerdict(squadClassEdge(state, arenaSquad(state), o.combatClass));
+          return (
+            <article key={o.id} className="duel-card">
+              <div className="dc-head">
+                <span className="dc-name">{o.name}</span>
+                <ClassBadge cls={o.combatClass} small />
+              </div>
+              <div className="dc-meta">
+                <span>🎖️ {o.rating}</span>
+                <span>{o.power} ⚔</span>
+                <span className={`edge-tag ${edge.cls}`}>{edge.txt}</span>
+              </div>
+              <button type="button" className="btn" disabled={pvp.attacksLeft <= 0 || arenaSquad(state).length === 0} onClick={() => actions.duel(o.id)}>
+                {pvp.attacksLeft <= 0 ? "No duels left" : "⚔ Challenge"}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+      <p className="muted small">Win probability follows an ELO curve — beating a higher-rated legion pays more rating &amp; gold. Class matchup swings the fight. Duels refresh daily.</p>
+    </section>
+  );
+}
+
+// ---------------- Exchange (DEX + Bank) ----------------
+
+function ExchangeView({ state, now, actions }: { state: GameState; now: number; actions: Actions }) {
+  const [goldIn, setGoldIn] = useState("");
+  const [legionIn, setLegionIn] = useState("");
+  const [stakeAmt, setStakeAmt] = useState("");
+  const price = dexPrice(state);
+  const gN = Number(goldIn) || 0;
+  const lN = Number(legionIn) || 0;
+  const outLegion = quoteGoldToLegion(state, gN);
+  const outGold = quoteLegionToGold(state, lN);
+  const pending = bankPending(state, now);
+  const fee = bankWithdrawFee(state, now);
+  const sN = Number(stakeAmt) || 0;
+
+  return (
+    <section className="panel exchange">
+      <div className="panel-head">
+        <h2>💱 Exchange · DEX &amp; Bank</h2>
+        <div className="rank-chip">💠 1 gold ≈ {price.toFixed(3)} $LEGION</div>
+      </div>
+
+      <div className="xc-cols">
+        <div className="xc-card">
+          <h4 className="ml">⇄ Swap (constant-product AMM · 0.3% fee)</h4>
+          <div className="swap-row">
+            <input type="number" min="0" placeholder="gold in" value={goldIn} onChange={(e) => setGoldIn(e.target.value)} />
+            <span className="swap-arrow">→ 💠 {formatNum(outLegion)}</span>
+            <button type="button" className="btn" disabled={gN <= 0 || gN > state.gold} onClick={() => { actions.swapGoldForLegion(gN); setGoldIn(""); }}>Swap gold→$LEGION</button>
+          </div>
+          <div className="swap-row">
+            <input type="number" min="0" placeholder="$LEGION in" value={legionIn} onChange={(e) => setLegionIn(e.target.value)} />
+            <span className="swap-arrow">→ 🪙 {formatNum(outGold)}</span>
+            <button type="button" className="btn secondary" disabled={lN <= 0 || lN > state.legion} onClick={() => { actions.swapLegionForGold(lN); setLegionIn(""); }}>Swap $LEGION→gold</button>
+          </div>
+          <p className="muted small">Pool: 🪙 {formatNum(state.dex.poolGold)} / 💠 {formatNum(state.dex.poolLegion)}. Big swaps move the price (slippage).</p>
+        </div>
+
+        <div className="xc-card">
+          <h4 className="ml">🏦 Bank · stake $LEGION for real yield</h4>
+          <div className="bank-stats">
+            <div><b>{formatNum(state.bank.staked)}</b><span>staked 💠</span></div>
+            <div><b>{formatNum(pending)}</b><span>pending yield</span></div>
+            <div><b>{Math.round(fee * 100)}%</b><span>withdraw fee</span></div>
+          </div>
+          <div className="swap-row">
+            <input type="number" min="0" placeholder="amount" value={stakeAmt} onChange={(e) => setStakeAmt(e.target.value)} />
+            <button type="button" className="btn" disabled={sN <= 0 || sN > state.legion} onClick={() => { actions.stakeLegion(sN); setStakeAmt(""); }}>Stake</button>
+            <button type="button" className="btn secondary" disabled={sN <= 0 || sN > state.bank.staked} onClick={() => { actions.unstakeLegion(sN); setStakeAmt(""); }}>Unstake</button>
+          </div>
+          <button type="button" className="btn" disabled={pending < 1} onClick={() => actions.claimBankYield()}>Claim {formatNum(pending)} 💠 yield</button>
+          <p className="muted small">Emissions accrue every second. Withdrawal fee decays 25%→8%→4%→0 the longer you stay staked — anti-mercenary, DeFi-Kingdoms style.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------- Realm (Land / territories) ----------------
+
+const LAND_ALL: LandKind[] = ["gold", "provisions", "salves", "legion", "might"];
+
+function RealmView({ state, stats, actions }: { state: GameState; stats: Stats; actions: Actions }) {
+  const [kind, setKind] = useState<LandKind>("gold");
+  const claimCost = landClaimCost(state);
+  const slots = landSlotsLeft(state);
+  const gated = stats.might < LAND_MIN_MIGHT;
+  const y = landYields(state);
+  return (
+    <section className="panel realm">
+      <div className="panel-head">
+        <h2>🗺️ The Realm · territory</h2>
+        <div className="rank-chip">{state.land.length}/{LAND_SLOTS} parcels</div>
+      </div>
+      <p className="muted small">
+        Scarce parcels that yield forever. Claiming costs 💠 $LEGION and is gated by might ({LAND_MIN_MIGHT}+) — the realm answers only to strength.
+        Realm yield now: 🪙 {y.gold.toFixed(1)}/s · 🌾 {y.provisions.toFixed(1)}/s · ⛑ {y.salves.toFixed(1)}/s · 💠 {y.legion.toFixed(2)}/s · ⚔ +{Math.round(y.might)}.
+      </p>
+
+      <div className="realm-grid">
+        {state.land.map((p) => {
+          const meta = LAND_KIND_META[p.kind];
+          const upCost = landUpgradeCost(p);
+          const isMight = p.kind === "might";
+          return (
+            <article key={p.id} className={`parcel k-${p.kind}`}>
+              <div className="parcel-top"><span className="parcel-ic">{meta.icon}</span><span className="parcel-lvl">Lv {p.level}</span></div>
+              <div className="parcel-name">{meta.name}</div>
+              <div className="parcel-yield muted small">
+                {isMight ? `+${Math.round(LAND_YIELD.might * p.level)} ⚔ might` : `+${(LAND_YIELD[p.kind] * p.level).toFixed(2)}/s`}
+              </div>
+              <button type="button" className="chip-btn up" disabled={state.gold < upCost} onClick={() => actions.upgradeLand(p.id)}>▲ 🪙 {formatNum(upCost)}</button>
+            </article>
+          );
+        })}
+        {Array.from({ length: slots }).map((_, i) => (
+          <article key={`empty${i}`} className="parcel empty">
+            <span className="parcel-plus">＋</span>
+            <span className="muted small">unclaimed</span>
+          </article>
+        ))}
+      </div>
+
+      {slots > 0 && (
+        <div className="claim-bar">
+          <span className="build-label">STAKE A NEW CLAIM</span>
+          <div className="claim-kinds">
+            {LAND_ALL.map((k) => (
+              <button key={k} type="button" className={`chip-btn ${kind === k ? "on" : ""}`} onClick={() => setKind(k)}>
+                {LAND_KIND_META[k].icon} {LAND_KIND_META[k].name}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="btn" disabled={gated || state.legion < claimCost} onClick={() => actions.claimLand(kind)} title={gated ? `Need ${LAND_MIN_MIGHT} might` : ""}>
+            {gated ? `🔒 need ${LAND_MIN_MIGHT} ⚔` : `Claim · 💠 ${formatNum(claimCost)}`}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

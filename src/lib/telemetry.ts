@@ -14,7 +14,7 @@ const MAX_BATCH = 40;
 
 export interface TrackEvent {
   name: string;
-  type: "click" | "action" | "pageview" | "session_start";
+  type: "click" | "action" | "pageview" | "session_start" | "login";
   ts: number;
   meta?: Record<string, unknown>;
 }
@@ -25,6 +25,12 @@ let walletAddress: string | null = null;
 let queue: TrackEvent[] = [];
 let timer: number | null = null;
 let started = false;
+let loggedIn = false;
+
+// Engagement (active-time) tracking — only counts while the tab is visible.
+let activeStart = 0;        // ms timestamp the current focused stretch began (0 = not active)
+let pendingActiveMs = 0;    // active ms accumulated since the last flush
+let newVisitPending = false; // true until the first flush of this page load lands
 
 function getSessionId(): string {
   if (sessionId) return sessionId;
@@ -57,15 +63,40 @@ export function track(name: string, type: TrackEvent["type"] = "click", meta?: R
   if (queue.length >= MAX_BATCH) void flush();
 }
 
+// Fire a one-time login event the first time the player authenticates.
+export function markLogin(nextEmail: string | null, wallet: string | null) {
+  identify({ email: nextEmail, walletAddress: wallet });
+  if (loggedIn) return;
+  loggedIn = true;
+  track("login", "login", { email: nextEmail, wallet });
+  void flush();
+}
+
+// Roll the currently-open active stretch into the pending accumulator.
+function harvestActive() {
+  if (activeStart) {
+    pendingActiveMs += Date.now() - activeStart;
+    activeStart = document.visibilityState === "visible" ? Date.now() : 0;
+  }
+}
+
 export async function flush(useBeacon = false): Promise<void> {
-  if (!BASE || queue.length === 0) return;
+  harvestActive();
+  // Always flush when there's engagement time to report, even with no events.
+  if (!BASE || (queue.length === 0 && pendingActiveMs < 1000)) return;
   const batch = queue;
   queue = [];
+  const activeMs = pendingActiveMs;
+  pendingActiveMs = 0;
+  const isNewVisit = newVisitPending;
+  newVisitPending = false;
   const payload = JSON.stringify({
     sessionId: getSessionId(),
     email,
     walletAddress,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    activeMs,
+    newVisit: isNewVisit,
     events: batch,
   });
   const url = `${BASE}/functions/track`;
@@ -102,6 +133,8 @@ export function initTelemetry() {
   if (started || !BASE) return;
   started = true;
   getSessionId();
+  newVisitPending = true;
+  activeStart = document.visibilityState === "visible" ? Date.now() : 0;
 
   track("session_start", "session_start", {
     ua: navigator.userAgent,
@@ -127,7 +160,13 @@ export function initTelemetry() {
   const finalFlush = () => void flush(true);
   window.addEventListener("pagehide", finalFlush);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") finalFlush();
+    if (document.visibilityState === "hidden") {
+      harvestActive();     // bank the active stretch that just ended
+      activeStart = 0;     // pause the engagement clock while hidden
+      finalFlush();
+    } else {
+      activeStart = Date.now(); // resume on refocus
+    }
   });
 }
 
@@ -155,10 +194,14 @@ export interface PlayerSession {
   total_clicks: number;
   first_seen: string;
   last_seen: string;
+  active_seconds: number;
+  visits: number;
+  last_visit_seconds: number;
+  last_login: string | null;
 }
 
 export interface AdminAnalytics {
-  totals: { sessions: number; events: number; clicks: number; countries: number; onlineNow: number };
+  totals: { sessions: number; events: number; clicks: number; countries: number; onlineNow: number; avgActiveSec: number };
   series: Array<{ t: string; count: number }>;
   byType: Array<{ type: string; count: number }>;
   topEvents: Array<{ name: string; count: number }>;
@@ -171,6 +214,7 @@ export interface AdminAnalytics {
 export interface SessionDetail {
   session: PlayerSession | null;
   events: Array<{ event_name: string; event_type: string; created_at: string; meta: Record<string, unknown> | null }>;
+  buttonCounts: Array<{ name: string; type: string; count: number }>;
 }
 
 async function adminPost(token: string, body: Record<string, unknown>) {

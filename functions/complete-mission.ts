@@ -31,6 +31,7 @@ export default async function (req: Request): Promise<Response> {
   }
 
   const operatorId = String(body?.operatorId || "").slice(0, 64).trim();
+  const identity = String(body?.identity || "").slice(0, 200).trim().toLowerCase();
   const code = String(body?.code || "").slice(0, 64).trim();
   const guess = String(body?.answer || "").slice(0, 200);
   if (!operatorId || !code) return json({ error: "operatorId and code required" }, 400);
@@ -40,13 +41,28 @@ export default async function (req: Request): Promise<Response> {
     apiKey: Deno.env.get("API_KEY"),
   });
 
-  // Must hold a mirror.
-  const { data: mirror } = await admin.database
-    .from("scrying_mirrors")
-    .select("serial")
-    .eq("operator_id", operatorId)
-    .maybeSingle();
+  // Must hold a mirror — resolve by verified identity first (cross-device), then device.
+  let mirror: { operator_id: string } | null = null;
+  if (identity) {
+    const { data } = await admin.database
+      .from("scrying_mirrors")
+      .select("operator_id")
+      .eq("claim_identity", identity)
+      .maybeSingle();
+    mirror = data ?? null;
+  }
+  if (!mirror) {
+    const { data } = await admin.database
+      .from("scrying_mirrors")
+      .select("operator_id")
+      .eq("operator_id", operatorId)
+      .maybeSingle();
+    mirror = data ?? null;
+  }
   if (!mirror) return json({ status: "not_operator" }, 403);
+
+  // Canonical operator id keys the log so completions are stable across devices.
+  const canonical = mirror.operator_id;
 
   const { data: mission } = await admin.database
     .from("operator_missions")
@@ -59,7 +75,7 @@ export default async function (req: Request): Promise<Response> {
   const { data: prior } = await admin.database
     .from("operator_mission_log")
     .select("id")
-    .eq("operator_id", operatorId)
+    .eq("operator_id", canonical)
     .eq("mission_id", mission.id)
     .maybeSingle();
   if (prior) return json({ status: "already_done" });
@@ -73,7 +89,7 @@ export default async function (req: Request): Promise<Response> {
 
   const { error: logErr } = await admin.database
     .from("operator_mission_log")
-    .insert([{ operator_id: operatorId, mission_id: mission.id }]);
+    .insert([{ operator_id: canonical, mission_id: mission.id }]);
   // Unique violation → someone double-submitted; treat as already done.
   if (logErr) return json({ status: "already_done" });
 

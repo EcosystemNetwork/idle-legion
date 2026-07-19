@@ -1336,10 +1336,10 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .adm-small { font-size: 10px; }
 
 /* KPI tiles */
-.adm-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 10px 0; }
+.adm-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; margin: 10px 0; }
 .adm-kpi { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 10px; padding: 9px 8px; text-align: center; }
-.adm-kpi b { display: block; font-family: var(--font-head); font-size: 20px; color: #fff; line-height: 1.1;
+  border-radius: 10px; padding: 9px 5px; text-align: center; }
+.adm-kpi b { display: block; font-family: var(--font-head); font-size: 17px; color: #fff; line-height: 1.1;
   font-variant-numeric: tabular-nums; }
 .adm-kpi small { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; color: #8a819c; margin-top: 2px; }
 .adm-kpi.live { border-color: rgba(93, 227, 138, 0.4); background: rgba(93, 227, 138, 0.08); position: relative; }

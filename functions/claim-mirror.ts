@@ -38,6 +38,11 @@ export default async function (req: Request): Promise<Response> {
   const operatorId = String(body?.operatorId || "").slice(0, 64).trim();
   if (!operatorId) return json({ error: "operatorId required" }, 400);
 
+  // Launch-grade anti-sybil: the scarce relic requires a verified identity
+  // (wallet address or Magic email). Anonymous device ids can't claim.
+  const identity = String(body?.identity || "").slice(0, 200).trim().toLowerCase();
+  if (!identity) return json({ status: "needs_identity", serial: null });
+
   const admin = createAdminClient({
     baseUrl: Deno.env.get("INSFORGE_BASE_URL"),
     apiKey: Deno.env.get("API_KEY"),
@@ -46,6 +51,7 @@ export default async function (req: Request): Promise<Response> {
   const { data, error } = await admin.database.rpc("claim_mirror", {
     p_operator_id: operatorId,
     p_ip: clientIp(req),
+    p_identity: identity,
   });
   if (error) return json({ error: "claim failed", detail: error.message }, 500);
 

@@ -93,14 +93,20 @@ import {
   randomName,
 } from "./config";
 import type {
+  Aptitude,
   CombatClass,
   Dweller,
   DerivedStats,
+  DuelResult,
   GameState,
   GearDef,
   GearItem,
   GearSlot,
+  Gene,
+  Genome,
   IncidentKind,
+  LandKind,
+  LandPlot,
   LevelUpEvent,
   MarketOffer,
   Objective,
@@ -112,6 +118,9 @@ import type {
   Room,
   RoomType,
   Tier,
+  WorldBossReward,
+  WorldBossRival,
+  WorldBossState,
 } from "./types";
 
 let idCounter = 0;
@@ -138,9 +147,32 @@ export function staminaFrac(d: Dweller): number {
   return Math.max(0, Math.min(1, d.stamina / MAX_STAMINA));
 }
 
-/** Combat class of a dweller (from its tier). */
+/** Combat class of a dweller — its dominant gene, falling back to its tier. */
 export function dwellerClass(d: Dweller): CombatClass {
-  return TIERS[d.tier].combatClass;
+  return d.genome?.dominant.combatClass ?? TIERS[d.tier].combatClass;
+}
+
+// ---------- genetics (DeFi-Kingdoms genome) ----------
+
+const APTITUDES: Aptitude[] = ["labor", "hunt", "war"];
+const COMBAT_CLASSES: CombatClass[] = ["melee", "ranged", "charge"];
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function randomGene(): Gene {
+  return { aptitude: pick(APTITUDES), combatClass: pick(COMBAT_CLASSES) };
+}
+
+/** A founder's genome: dominant gene from its tier, plus 1–2 random recessives. */
+export function defaultGenome(tier: Tier): Genome {
+  const def = TIERS[tier];
+  const n = 1 + Math.floor(Math.random() * 2);
+  return {
+    dominant: { aptitude: def.aptitude, combatClass: def.combatClass },
+    recessive: Array.from({ length: n }, randomGene),
+  };
 }
 
 export function makeDweller(tier: Tier): Dweller {
@@ -154,6 +186,10 @@ export function makeDweller(tier: Tier): Dweller {
     xp: 0,
     hp: 0,
     stamina: MAX_STAMINA,
+    gen: 0,
+    summonsLeft: GEN0_SUMMONS,
+    summonReadyAt: 0,
+    genome: defaultGenome(tier),
     roomId: null,
     equipped: { weapon: null, armor: null, mount: null },
   };
@@ -190,6 +226,20 @@ export function createInitialState(now = Date.now()): GameState {
     gold: 80,
     provisions: 120,
     salves: 30, // a small starter kit so the first wounds can be mended
+    legion: 0, // earn $LEGION via the DEX, land, bank, boss & duels
+    dex: { poolGold: DEX_SEED_GOLD, poolLegion: DEX_SEED_LEGION },
+    bank: { staked: 0, stakedAt: now, accrued: 0, lastTick: now },
+    land: [],
+    worldBoss: makeWorldBoss(1, now, 0),
+    pvp: {
+      rating: PVP_START_RATING,
+      wins: 0,
+      losses: 0,
+      streak: 0,
+      attacksLeft: PVP_DAILY_ATTACKS,
+      lastReset: Math.floor(now / 86_400_000),
+      lastResult: null,
+    },
     rooms: [quarters, hall, mine, warchest],
     dwellers,
     market: rollMarket(),
@@ -480,9 +530,17 @@ export function deriveStats(state: GameState): DerivedStats {
     if (d.downed || d.hp < dwellerMaxHp(d)) woundedCount++;
   }
 
+  // Territory adds passive yields and flat might.
+  const ly = landYields(state);
+  goldPerSec += ly.gold;
+  salvesPerSec += ly.salves;
+  provGross += ly.provisions;
+  might += ly.might;
+  const legionPerSec = ly.legion + state.bank.staked * BANK_YIELD_PER_SEC;
+
   const provisionsPerSec = provGross - population * UPKEEP_PER_DWELLER;
 
-  return { might, goldPerSec, provisionsPerSec, salvesPerSec, population, idleCount, woundedCount, fed };
+  return { might, goldPerSec, provisionsPerSec, salvesPerSec, legionPerSec, population, idleCount, woundedCount, fed };
 }
 
 // ---------- tick ----------
@@ -594,6 +652,37 @@ export function tick(state: GameState, now = Date.now()): GameState {
     next.dwellers = next.dwellers.map((d) =>
       downSet.has(d.id) ? { ...d, roomId: null } : d,
     );
+  }
+
+  // Territory (Land) pays passive yields straight into the treasury.
+  {
+    const ly = landYields(next);
+    if (ly.gold || ly.provisions || ly.salves || ly.legion) {
+      const g = ly.gold * elapsed;
+      next.gold = next.gold + g;
+      next.totalGoldEarned = next.totalGoldEarned + g;
+      next.provisions = next.provisions + ly.provisions * elapsed;
+      next.salves = next.salves + ly.salves * elapsed;
+      next.legion = next.legion + ly.legion * elapsed;
+    }
+  }
+
+  // Bank yield accrues (settle the emission clock).
+  next.bank = {
+    ...next.bank,
+    accrued: next.bank.accrued + next.bank.staked * BANK_YIELD_PER_SEC * elapsed,
+    lastTick: now,
+  };
+
+  // Shared World Boss: rivals keep swinging; cycle resolves on kill/timeout.
+  next = advanceWorldBoss(next, elapsed, now);
+
+  // PvP duels refill once per day.
+  {
+    const today = Math.floor(now / 86_400_000);
+    if (today > next.pvp.lastReset) {
+      next.pvp = { ...next.pvp, attacksLeft: PVP_DAILY_ATTACKS, lastReset: today };
+    }
   }
 
   next.lastTick = now;
@@ -1405,6 +1494,13 @@ export function descend(state: GameState, now = Date.now()): GameState {
     lastFundTxId: state.lastFundTxId,
     // The login streak is a real-world habit — it shouldn't reset on a descent.
     daily: state.daily,
+    // The DeFi economy & ladders are account-level meta — they persist too.
+    // (Land is stronghold territory, so it resets with the run.)
+    legion: state.legion,
+    dex: state.dex,
+    bank: state.bank,
+    pvp: state.pvp,
+    worldBoss: state.worldBoss,
   };
 }
 
@@ -1463,6 +1559,520 @@ export function grantBundle(
     next = { ...next, dwellers: [...next.dwellers, makeDweller("champion")] };
   }
   return next;
+}
+
+// ============================================================
+//  DEEP ECONOMY — summoning · DEX · bank · land · world boss · PvP
+// ============================================================
+
+function hasRoom(state: GameState, type: RoomType): boolean {
+  return state.rooms.some((r) => r.type === type);
+}
+
+// ---------- genetic summoning ----------
+
+const TIER_UP: Record<Tier, Tier> = {
+  recruit: "spearman",
+  spearman: "archer",
+  archer: "cavalry",
+  cavalry: "champion",
+  champion: "champion",
+};
+
+/** How many times a founder-equivalent hero has already summoned (for fatigue/cost). */
+export function summonsUsed(d: Dweller): number {
+  return Math.max(0, GEN0_SUMMONS - (d.summonsLeft ?? 0));
+}
+
+/** Fatigue cooldown length for this hero's next summon (grows with use). */
+export function summonCooldownFor(d: Dweller): number {
+  return SUMMON_COOLDOWN_BASE_MS + SUMMON_COOLDOWN_GROWTH_MS * summonsUsed(d);
+}
+
+/** Can this hero be used in a summon right now? */
+export function canSummonWith(state: GameState, d: Dweller, now: number): boolean {
+  return (
+    (d.summonsLeft ?? 0) > 0 &&
+    (d.summonReadyAt ?? 0) <= now &&
+    !d.downed &&
+    !isOnRaid(state, d.id)
+  );
+}
+
+/** Gold + $LEGION a summon of these two parents costs (rises with lineage & use). */
+export function summonCost(a: Dweller, b: Dweller): { gold: number; legion: number } {
+  const genSum = (a.gen ?? 0) + (b.gen ?? 0);
+  const useSum = summonsUsed(a) + summonsUsed(b);
+  return {
+    gold: SUMMON_BASE_GOLD + SUMMON_GOLD_PER_GEN * genSum,
+    legion: SUMMON_BASE_LEGION + SUMMON_LEGION_PER_SUMMON * useSum,
+  };
+}
+
+/** Merge two genomes into a child's — dominant may be a surfaced recessive. */
+function combineGenomes(a: Genome, b: Genome): Genome {
+  const poolA = [a.dominant, ...a.recessive];
+  const poolB = [b.dominant, ...b.recessive];
+  // Dominant: usually a parent's dominant, sometimes a recessive surfaces.
+  const dominant: Gene =
+    Math.random() < SUMMON_RECESSIVE_SURFACE
+      ? pick([...a.recessive, ...b.recessive, a.dominant, b.dominant])
+      : pick([a.dominant, b.dominant]);
+  // Recessives: sample the combined gene pool, plus an occasional fresh mutation.
+  const combined = [...poolA, ...poolB];
+  const recessive: Gene[] = [];
+  const n = 1 + Math.floor(Math.random() * MAX_RECESSIVE);
+  for (let i = 0; i < n; i++) {
+    recessive.push(Math.random() < 0.15 ? randomGene() : pick(combined));
+  }
+  return { dominant, recessive };
+}
+
+/** Summon a new-blood gladiator from two parents (breeding + genetics). */
+export function summonHero(
+  state: GameState,
+  aId: string,
+  bId: string,
+  now = Date.now(),
+): GameState {
+  if (!hasRoom(state, "portal")) throw new Error("Dig a Summoning Portal first.");
+  if (aId === bId) throw new Error("A hero can't summon with itself — pick two.");
+  const a = dwellerById(state, aId);
+  const b = dwellerById(state, bId);
+  if (!a || !b) throw new Error("Pick two heroes to summon with.");
+  if (!canSummonWith(state, a, now) || !canSummonWith(state, b, now)) {
+    throw new Error("A chosen hero is fatigued, tapped out, downed, or on a raid.");
+  }
+  if (state.dwellers.length >= maxPopulation(state)) {
+    throw new Error("Great Hall is full — upgrade it to house the new blood.");
+  }
+  const cost = summonCost(a, b);
+  if (state.gold < cost.gold) throw new Error("Not enough gold to bind the summon.");
+  if (state.legion < cost.legion) throw new Error("Not enough $LEGION to bind the summon.");
+
+  // Child tier: the stronger parent's, with a chance to mutate up a rung.
+  const hiTier = TIER_ORDER.indexOf(a.tier) >= TIER_ORDER.indexOf(b.tier) ? a.tier : b.tier;
+  const childTier = Math.random() < SUMMON_MUTATE_UP ? TIER_UP[hiTier] : hiTier;
+  const genome = combineGenomes(
+    a.genome ?? defaultGenome(a.tier),
+    b.genome ?? defaultGenome(b.tier),
+  );
+
+  const child = makeDweller(childTier);
+  child.genome = genome;
+  child.aptitude = genome.dominant.aptitude; // genes express, not tier defaults
+  child.gen = Math.max(a.gen ?? 0, b.gen ?? 0) + 1;
+  child.summonsLeft = Math.max(0, Math.min(a.summonsLeft ?? 0, b.summonsLeft ?? 0) - 1);
+
+  // Fatigue + spend a summon charge on both parents.
+  const spend = (d: Dweller): Dweller =>
+    d.id === aId || d.id === bId
+      ? {
+          ...d,
+          summonsLeft: Math.max(0, (d.summonsLeft ?? 0) - 1),
+          summonReadyAt: now + summonCooldownFor(d),
+        }
+      : d;
+
+  return {
+    ...state,
+    gold: state.gold - cost.gold,
+    legion: state.legion - cost.legion,
+    dwellers: [...state.dwellers.map(spend), child],
+  };
+}
+
+// ---------- DEX (constant-product AMM) ----------
+
+/** Spot price: $LEGION you'd get per 1 gold (before fee/slippage). */
+export function dexPrice(state: GameState): number {
+  return state.dex.poolGold > 0 ? state.dex.poolLegion / state.dex.poolGold : 0;
+}
+
+function ammOut(inAmt: number, inRes: number, outRes: number): number {
+  const inWithFee = inAmt * (1 - DEX_FEE);
+  return (inWithFee * outRes) / (inRes + inWithFee);
+}
+
+export function quoteGoldToLegion(state: GameState, goldIn: number): number {
+  if (goldIn <= 0) return 0;
+  return ammOut(goldIn, state.dex.poolGold, state.dex.poolLegion);
+}
+
+export function quoteLegionToGold(state: GameState, legionIn: number): number {
+  if (legionIn <= 0) return 0;
+  return ammOut(legionIn, state.dex.poolLegion, state.dex.poolGold);
+}
+
+export function swapGoldForLegion(state: GameState, goldIn: number): GameState {
+  if (goldIn <= 0) throw new Error("Enter an amount to swap.");
+  if (state.gold < goldIn) throw new Error("Not enough gold.");
+  const out = quoteGoldToLegion(state, goldIn);
+  if (out <= 0) throw new Error("Swap too small.");
+  return {
+    ...state,
+    gold: state.gold - goldIn,
+    legion: state.legion + out,
+    dex: { poolGold: state.dex.poolGold + goldIn, poolLegion: state.dex.poolLegion - out },
+  };
+}
+
+export function swapLegionForGold(state: GameState, legionIn: number): GameState {
+  if (legionIn <= 0) throw new Error("Enter an amount to swap.");
+  if (state.legion < legionIn) throw new Error("Not enough $LEGION.");
+  const out = quoteLegionToGold(state, legionIn);
+  if (out <= 0) throw new Error("Swap too small.");
+  return {
+    ...state,
+    legion: state.legion - legionIn,
+    gold: state.gold + out,
+    totalGoldEarned: state.totalGoldEarned + out,
+    dex: { poolLegion: state.dex.poolLegion + legionIn, poolGold: state.dex.poolGold - out },
+  };
+}
+
+// ---------- Bank (single-stake $LEGION → real-yield) ----------
+
+/** $LEGION yield accrued since the last tick, plus what's already banked. */
+export function bankPending(state: GameState, now: number): number {
+  const elapsed = Math.max(0, (now - state.bank.lastTick) / 1000);
+  return state.bank.accrued + state.bank.staked * BANK_YIELD_PER_SEC * elapsed;
+}
+
+/** Current withdrawal-fee fraction (decays the longer you've been staked). */
+export function bankWithdrawFee(state: GameState, now: number): number {
+  const held = now - state.bank.stakedAt;
+  for (const step of BANK_FEE_SCHEDULE) {
+    if (held < step.underMs) return step.fee;
+  }
+  return 0;
+}
+
+function settleBank(state: GameState, now: number): GameState {
+  const elapsed = Math.max(0, (now - state.bank.lastTick) / 1000);
+  const gained = state.bank.staked * BANK_YIELD_PER_SEC * elapsed;
+  return { ...state, bank: { ...state.bank, accrued: state.bank.accrued + gained, lastTick: now } };
+}
+
+export function stakeLegion(state: GameState, amount: number, now = Date.now()): GameState {
+  if (amount <= 0) throw new Error("Enter an amount to stake.");
+  if (state.legion < amount) throw new Error("Not enough $LEGION to stake.");
+  const s = settleBank(state, now);
+  return {
+    ...s,
+    legion: s.legion - amount,
+    bank: { ...s.bank, staked: s.bank.staked + amount, stakedAt: now },
+  };
+}
+
+export function unstakeLegion(state: GameState, amount: number, now = Date.now()): GameState {
+  if (amount <= 0) throw new Error("Enter an amount to unstake.");
+  if (state.bank.staked < amount) throw new Error("You haven't staked that much.");
+  const s = settleBank(state, now);
+  const fee = bankWithdrawFee(s, now);
+  const received = amount * (1 - fee);
+  return {
+    ...s,
+    legion: s.legion + received,
+    bank: { ...s.bank, staked: s.bank.staked - amount },
+  };
+}
+
+export function claimBankYield(state: GameState, now = Date.now()): GameState {
+  const s = settleBank(state, now);
+  const payout = Math.floor(s.bank.accrued);
+  if (payout <= 0) return s;
+  return { ...s, legion: s.legion + payout, bank: { ...s.bank, accrued: s.bank.accrued - payout } };
+}
+
+// ---------- Land / territories ----------
+
+/** $LEGION to claim the next parcel (scarcity — rises with holdings). */
+export function landClaimCost(state: GameState): number {
+  return Math.floor(LAND_CLAIM_BASE_LEGION * Math.pow(1.5, state.land.length));
+}
+
+export function landUpgradeCost(plot: LandPlot): number {
+  return Math.floor(LAND_UPGRADE_BASE_GOLD * Math.pow(1.7, plot.level - 1));
+}
+
+export function landSlotsLeft(state: GameState): number {
+  return Math.max(0, LAND_SLOTS - state.land.length);
+}
+
+/** Aggregate per-second yields (and flat might) from all owned parcels. */
+export function landYields(state: GameState): {
+  gold: number;
+  provisions: number;
+  salves: number;
+  legion: number;
+  might: number;
+} {
+  const out = { gold: 0, provisions: 0, salves: 0, legion: 0, might: 0 };
+  for (const p of state.land) out[p.kind] += LAND_YIELD[p.kind] * p.level;
+  return out;
+}
+
+export function claimLand(state: GameState, kind: LandKind, now = Date.now()): GameState {
+  if (landSlotsLeft(state) <= 0) throw new Error("Every parcel in the realm is claimed.");
+  if (deriveStats(state).might < LAND_MIN_MIGHT) {
+    throw new Error(`The realm answers only to strength — reach ${LAND_MIN_MIGHT} might.`);
+  }
+  const cost = landClaimCost(state);
+  if (state.legion < cost) throw new Error("Not enough $LEGION to stake this claim.");
+  void now;
+  return {
+    ...state,
+    legion: state.legion - cost,
+    land: [...state.land, { id: uid("land"), kind, level: 1 }],
+  };
+}
+
+export function upgradeLand(state: GameState, plotId: string): GameState {
+  const plot = state.land.find((p) => p.id === plotId);
+  if (!plot) throw new Error("No such parcel.");
+  const cost = landUpgradeCost(plot);
+  if (state.gold < cost) throw new Error("Not enough gold to develop this parcel.");
+  return {
+    ...state,
+    gold: state.gold - cost,
+    land: state.land.map((p) => (p.id === plotId ? { ...p, level: p.level + 1 } : p)),
+  };
+}
+
+// ---------- Shared World Boss (simulated co-op) ----------
+
+/** Deterministic small hash so seeded rivals are stable within a cycle. */
+function seededRand(seed: number): () => number {
+  let s = (seed % 2147483647) || 1;
+  return () => (s = (s * 16807) % 2147483647) / 2147483647;
+}
+
+export function makeWorldBoss(tier: number, now: number, week: number): WorldBossState {
+  const maxHp = Math.floor(WB_BASE_HP * Math.pow(1 + WB_HP_GROWTH, tier - 1));
+  const rnd = seededRand(tier * 7919 + week * 104729 + 13);
+  const names = [...WB_RIVAL_NAMES];
+  const rivals: WorldBossRival[] = [];
+  for (let i = 0; i < WB_RIVAL_COUNT; i++) {
+    const name = names.splice(Math.floor(rnd() * names.length), 1)[0] ?? `Rival ${i + 1}`;
+    // Fractional dps (do NOT floor — a week-scale boss has sub-1/s rates). Tuned
+    // so the rival field alone fells a tier-1 boss in ~a day; the cycle keeps
+    // turning and the leaderboard stays live even while you're away.
+    const power = (maxHp / (WB_WEEK_MS / 1000)) * (0.5 + rnd() * 1.5);
+    rivals.push({ name, power, contributed: 0 });
+  }
+  return {
+    tier,
+    hp: maxHp,
+    maxHp,
+    endsAt: now + WB_WEEK_MS,
+    contributed: 0,
+    lastHitAt: 0,
+    rivals,
+    week,
+    lastReward: null,
+  };
+}
+
+export function worldBossName(state: GameState): string {
+  return WB_NAMES[(state.worldBoss.tier - 1) % WB_NAMES.length];
+}
+
+/** The live leaderboard: you + all rivals, sorted by damage contributed. */
+export function worldBossLeaderboard(
+  state: GameState,
+): { name: string; contributed: number; isYou: boolean }[] {
+  const rows = [
+    { name: "Your Legion", contributed: state.worldBoss.contributed, isYou: true },
+    ...state.worldBoss.rivals.map((r) => ({ name: r.name, contributed: r.contributed, isYou: false })),
+  ];
+  return rows.sort((a, b) => b.contributed - a.contributed);
+}
+
+export function worldBossRank(state: GameState): number {
+  return worldBossLeaderboard(state).findIndex((r) => r.isYou) + 1;
+}
+
+/** Pay out ranked rewards for a finished cycle and spawn the next, bigger boss. */
+function resolveWorldBossCycle(state: GameState, now: number): GameState {
+  const board = worldBossLeaderboard(state);
+  const rank = board.findIndex((r) => r.isYou); // 0-based
+  const field = board.length;
+  let reward = WB_PARTICIPATION;
+  if (state.worldBoss.contributed > 0 && rank < WB_RANK_REWARDS.length) reward = WB_RANK_REWARDS[rank];
+  const paid: WorldBossReward = {
+    rank: rank + 1,
+    field,
+    gold: reward.gold,
+    legion: reward.legion,
+    lunchboxes: reward.lunchboxes,
+    bossName: worldBossName(state),
+  };
+  const nextTier = state.worldBoss.hp <= 0 ? state.worldBoss.tier + 1 : state.worldBoss.tier;
+  const fresh = makeWorldBoss(nextTier, now, state.worldBoss.week + 1);
+  return {
+    ...state,
+    gold: state.gold + (state.worldBoss.contributed > 0 ? reward.gold : 0),
+    totalGoldEarned: state.totalGoldEarned + (state.worldBoss.contributed > 0 ? reward.gold : 0),
+    legion: state.legion + (state.worldBoss.contributed > 0 ? reward.legion : 0),
+    lunchboxes: state.lunchboxes + (state.worldBoss.contributed > 0 ? reward.lunchboxes : 0),
+    worldBoss: { ...fresh, lastReward: state.worldBoss.contributed > 0 ? paid : null },
+  };
+}
+
+/**
+ * Advance the shared boss over elapsed time: rival legions pour in damage and
+ * the weekly cycle resolves on kill or timeout. Called from tick().
+ */
+export function advanceWorldBoss(state: GameState, elapsed: number, now: number): GameState {
+  const wb = state.worldBoss;
+  if (elapsed <= 0) return state;
+  let rivalDamage = 0;
+  const rivals = wb.rivals.map((r) => {
+    const dmg = r.power * elapsed;
+    rivalDamage += dmg;
+    return { ...r, contributed: r.contributed + dmg };
+  });
+  const hp = Math.max(0, wb.hp - rivalDamage);
+  const advanced: GameState = { ...state, worldBoss: { ...wb, rivals, hp } };
+  if (hp <= 0 || now >= wb.endsAt) return resolveWorldBossCycle(advanced, now);
+  return advanced;
+}
+
+export type WorldBossHit = { damage: number; killed: boolean; classEdge: number };
+
+export function hitWorldBoss(
+  state: GameState,
+  now = Date.now(),
+): { state: GameState; hit: WorldBossHit } {
+  const wb = state.worldBoss;
+  if (now - wb.lastHitAt < WB_HIT_COOLDOWN_MS) throw new Error("Your legion is rallying — wait for the cooldown.");
+  const squad = arenaSquad(state); // rested, un-downed idle heroes
+  if (squad.length === 0) throw new Error("No rested heroes to send at the World Boss.");
+  const power = squadPower(state, squad);
+  // Boss class cycles by tier so the counter matters.
+  const bossClass = COMBAT_CLASSES[(wb.tier - 1) % COMBAT_CLASSES.length];
+  const edge = squadClassEdge(state, squad, bossClass);
+  const damage = Math.floor(power * (1.5 + Math.random()) * edge);
+
+  const hp = Math.max(0, wb.hp - damage);
+  const nextWb: WorldBossState = {
+    ...wb,
+    hp,
+    contributed: wb.contributed + damage,
+    lastHitAt: now,
+  };
+  // Spend stamina on the squad.
+  const squadIds = new Set(squad.map((d) => d.id));
+  const dwellers = state.dwellers.map((d) =>
+    squadIds.has(d.id) ? { ...d, stamina: Math.max(0, d.stamina - WB_STAMINA_PER_HIT) } : d,
+  );
+
+  let next: GameState = { ...state, worldBoss: nextWb, dwellers };
+  next = applyXp(next, squad.map((d) => d.id), XP_FIGHT);
+  const killed = hp <= 0;
+  if (killed) next = resolveWorldBossCycle(next, now);
+  return { state: next, hit: { damage, killed, classEdge: edge } };
+}
+
+export function clearWorldBossReward(state: GameState): GameState {
+  return state.worldBoss.lastReward
+    ? { ...state, worldBoss: { ...state.worldBoss, lastReward: null } }
+    : state;
+}
+
+// ---------- PvP ladder (simulated ranked duels) ----------
+
+export function pvpRankName(rating: number): string {
+  return PVP_RANK_NAMES.find((r) => rating >= r.min)?.name ?? "Legionary";
+}
+
+export type PvpOpponent = {
+  id: number;
+  name: string;
+  rating: number;
+  power: number;
+  combatClass: CombatClass;
+};
+
+/** Deterministic opponents drawn from the player's rating (refresh after a duel). */
+export function pvpOpponents(state: GameState): PvpOpponent[] {
+  const seed = Math.floor(state.pvp.rating) * 131 + state.pvp.wins * 17 + state.pvp.losses * 7 + 3;
+  const rnd = seededRand(seed);
+  const myPower = Math.max(20, squadPower(state, arenaSquad(state).length ? arenaSquad(state) : state.dwellers));
+  const names = [...WB_RIVAL_NAMES];
+  return Array.from({ length: PVP_OPP_COUNT }, (_, i) => {
+    const spread = -0.25 + i * 0.28; // easier → harder
+    const rating = Math.max(600, Math.round(state.pvp.rating + spread * 220 + (rnd() - 0.5) * 80));
+    const power = Math.max(15, Math.round(myPower * (0.7 + spread + rnd() * 0.5)));
+    const name = names.splice(Math.floor(rnd() * names.length), 1)[0] ?? `Rival ${i}`;
+    return { id: i, name, rating, power, combatClass: COMBAT_CLASSES[Math.floor(rnd() * 3)] };
+  });
+}
+
+/** Resolve a duel vs a chosen opponent — ELO update + rewards, daily-gated. */
+export function duel(state: GameState, oppId: number, now = Date.now()): GameState {
+  if (state.pvp.attacksLeft <= 0) throw new Error("Out of duels today — they refresh tomorrow.");
+  const squad = arenaSquad(state);
+  if (squad.length === 0) throw new Error("No rested heroes to duel with.");
+  const opp = pvpOpponents(state).find((o) => o.id === oppId);
+  if (!opp) throw new Error("That challenger has left the sands.");
+
+  const myPower = squadPower(state, squad);
+  const edge = squadClassEdge(state, squad, opp.combatClass);
+  const myScore = myPower * edge * (0.85 + Math.random() * 0.3);
+  const oppScore = opp.power * (0.85 + Math.random() * 0.3);
+  const won = myScore >= oppScore;
+
+  // ELO
+  const expected = 1 / (1 + Math.pow(10, (opp.rating - state.pvp.rating) / 400));
+  const delta = Math.round(PVP_K * ((won ? 1 : 0) - expected));
+  const rating = Math.max(600, state.pvp.rating + delta);
+
+  const gold = won ? PVP_WIN_GOLD + Math.floor(opp.rating / 2) : Math.floor(PVP_WIN_GOLD * 0.15);
+  const legion = won ? PVP_WIN_LEGION : 0;
+
+  const result: DuelResult = {
+    won,
+    oppName: opp.name,
+    ratingDelta: delta,
+    gold,
+    legion,
+    classEdge: edge,
+    yourPower: Math.floor(myPower),
+    oppPower: opp.power,
+  };
+
+  let next: GameState = {
+    ...state,
+    gold: state.gold + gold,
+    totalGoldEarned: state.totalGoldEarned + gold,
+    legion: state.legion + legion,
+    pvp: {
+      ...state.pvp,
+      rating,
+      wins: state.pvp.wins + (won ? 1 : 0),
+      losses: state.pvp.losses + (won ? 0 : 1),
+      streak: won ? state.pvp.streak + 1 : 0,
+      attacksLeft: state.pvp.attacksLeft - 1,
+      lastResult: result,
+    },
+  };
+  // A hard-fought duel tires the squad a little.
+  const ids = new Set(squad.map((d) => d.id));
+  next = {
+    ...next,
+    dwellers: next.dwellers.map((d) =>
+      ids.has(d.id) ? { ...d, stamina: Math.max(0, d.stamina - 10) } : d,
+    ),
+  };
+  next = applyXp(next, squad.map((d) => d.id), won ? XP_FIGHT_KILL : XP_FIGHT);
+  void now;
+  return next;
+}
+
+export function clearDuelResult(state: GameState): GameState {
+  return state.pvp.lastResult ? { ...state, pvp: { ...state.pvp, lastResult: null } } : state;
 }
 
 // ---------- equipment ----------
@@ -1662,6 +2272,7 @@ export function applyOffline(state: GameState, now: number): GameState {
   const gold = Math.floor(Math.max(0, stats.goldPerSec) * capped * OFFLINE_EFFICIENCY);
   const provisions = Math.floor(stats.provisionsPerSec * capped * OFFLINE_EFFICIENCY);
   const salves = Math.floor(Math.max(0, stats.salvesPerSec) * capped * OFFLINE_EFFICIENCY);
+  const legionGain = Math.max(0, stats.legionPerSec) * capped * OFFLINE_EFFICIENCY;
 
   // The Great Hall keeps raising recruits while you're away (if fed & housed).
   const hall = state.rooms.find((r) => r.type === "hall");
@@ -1682,12 +2293,25 @@ export function applyOffline(state: GameState, now: number): GameState {
     lastTick: now,
   };
 
-  return {
+  // Land legion yield + bank emissions accrue while away; duels refill for the
+  // days missed.
+  const bankGain = state.bank.staked * BANK_YIELD_PER_SEC * capped;
+  const bank = { ...state.bank, accrued: state.bank.accrued + bankGain, lastTick: now };
+  const today = Math.floor(now / 86_400_000);
+  const pvp =
+    today > state.pvp.lastReset
+      ? { ...state.pvp, attacksLeft: PVP_DAILY_ATTACKS, lastReset: today }
+      : state.pvp;
+
+  const out: GameState = {
     ...state,
     gold: state.gold + gold,
     totalGoldEarned: state.totalGoldEarned + gold,
     provisions: Math.max(0, state.provisions + provisions),
     salves: state.salves + salves,
+    legion: state.legion + legionGain,
+    bank,
+    pvp,
     dwellers,
     warChest,
     // any incident would have been fought off long ago
@@ -1695,6 +2319,8 @@ export function applyOffline(state: GameState, now: number): GameState {
     offlineSummary: { seconds: Math.floor(capped), gold, provisions, salves, recruits },
     lastTick: now,
   };
+  // The shared boss cycle advances (rivals keep swinging); any cycle payout lands.
+  return advanceWorldBoss(out, capped, now);
 }
 
 export function clearOfflineSummary(state: GameState): GameState {
@@ -1738,12 +2364,16 @@ export function loadState(): GameState {
     const merged: GameState = {
       ...base,
       ...parsed,
-      // Backfill new dweller stats (hp/stamina) on saves from before they existed.
+      // Backfill new dweller stats (hp/stamina/genome) on saves that predate them.
       dwellers: parsed.dwellers.map((d) => {
         const withDefaults = {
           ...d,
           stamina: typeof d.stamina === "number" ? d.stamina : MAX_STAMINA,
           hp: typeof d.hp === "number" ? d.hp : 0,
+          gen: typeof d.gen === "number" ? d.gen : 0,
+          summonsLeft: typeof d.summonsLeft === "number" ? d.summonsLeft : GEN0_SUMMONS,
+          summonReadyAt: typeof d.summonReadyAt === "number" ? d.summonReadyAt : 0,
+          genome: d.genome ?? defaultGenome(d.tier),
         };
         const max = dwellerMaxHp(withDefaults);
         return {
@@ -1753,6 +2383,13 @@ export function loadState(): GameState {
       }),
       warChest: parsed.warChest ?? base.warChest,
       daily: parsed.daily ?? base.daily,
+      // New economy substructures — always ensure a valid shape exists.
+      legion: typeof parsed.legion === "number" ? parsed.legion : base.legion,
+      dex: parsed.dex ?? base.dex,
+      bank: parsed.bank ?? base.bank,
+      land: Array.isArray(parsed.land) ? parsed.land : base.land,
+      pvp: parsed.pvp ?? base.pvp,
+      worldBoss: parsed.worldBoss ?? base.worldBoss,
       squad: Array.isArray(parsed.squad) ? parsed.squad : [],
       offlineSummary: null,
       raidReport: null,

@@ -49,8 +49,16 @@ export default async function (req: Request): Promise<Response> {
       .select("event_name,event_type,created_at,meta")
       .eq("session_id", sid)
       .order("created_at", { ascending: false })
-      .limit(300);
-    return json({ sessionDetail: { session, events } });
+      .limit(1000);
+    // Per-player button breakdown: "this player clicked X ×N".
+    const counts = new Map<string, { name: string; type: string; count: number }>();
+    for (const e of events as any[]) {
+      const cur = counts.get(e.event_name);
+      if (cur) cur.count++;
+      else counts.set(e.event_name, { name: e.event_name, type: e.event_type, count: 1 });
+    }
+    const buttonCounts = [...counts.values()].sort((a, b) => b.count - a.count);
+    return json({ sessionDetail: { session, events, buttonCounts } });
   }
 
   // ---- overview ----
@@ -112,6 +120,12 @@ export default async function (req: Request): Promise<Response> {
 
   const onlineNow = sList.filter((s) => s.last_seen && now - new Date(s.last_seen).getTime() < ONLINE_MS).length;
 
+  // Average active engagement time across players who have any recorded time.
+  const engaged = sList.filter((s) => (s.active_seconds ?? 0) > 0);
+  const avgActiveSec = engaged.length
+    ? engaged.reduce((a, s) => a + (s.active_seconds ?? 0), 0) / engaged.length
+    : 0;
+
   const recent = eList.slice(0, 80).map((e) => {
     const s = sById.get(e.session_id);
     return {
@@ -128,6 +142,7 @@ export default async function (req: Request): Promise<Response> {
       clicks: typeCount.get("click") ?? 0,
       countries: byCountry.filter((c) => c.country !== "Unknown").length,
       onlineNow,
+      avgActiveSec: Math.round(avgActiveSec),
     },
     series: buckets,
     byType,

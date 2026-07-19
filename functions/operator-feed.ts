@@ -27,6 +27,7 @@ export default async function (req: Request): Promise<Response> {
   }
 
   const operatorId = String(body?.operatorId || "").slice(0, 64).trim();
+  const identity = String(body?.identity || "").slice(0, 200).trim().toLowerCase();
   if (!operatorId) return json({ error: "operatorId required" }, 400);
 
   const admin = createAdminClient({
@@ -34,13 +35,29 @@ export default async function (req: Request): Promise<Response> {
     apiKey: Deno.env.get("API_KEY"),
   });
 
+  // Resolve the mirror by verified identity first (cross-device), then device id.
+  let mirror: { serial: number; operator_id: string } | null = null;
+  if (identity) {
+    const { data } = await admin.database
+      .from("scrying_mirrors")
+      .select("serial,operator_id")
+      .eq("claim_identity", identity)
+      .maybeSingle();
+    mirror = data ?? null;
+  }
+  if (!mirror) {
+    const { data } = await admin.database
+      .from("scrying_mirrors")
+      .select("serial,operator_id")
+      .eq("operator_id", operatorId)
+      .maybeSingle();
+    mirror = data ?? null;
+  }
   // Gate: no mirror, no visions.
-  const { data: mirror } = await admin.database
-    .from("scrying_mirrors")
-    .select("serial")
-    .eq("operator_id", operatorId)
-    .maybeSingle();
   if (!mirror) return json({ operator: false, missions: [] });
+
+  // Canonical operator id for the completion log (stable across devices).
+  const canonical = mirror.operator_id;
 
   const { data: missions } = await admin.database
     .from("operator_missions")
@@ -51,7 +68,7 @@ export default async function (req: Request): Promise<Response> {
   const { data: log } = await admin.database
     .from("operator_mission_log")
     .select("mission_id")
-    .eq("operator_id", operatorId);
+    .eq("operator_id", canonical);
 
   const done = new Set((log ?? []).map((r: any) => r.mission_id));
 
