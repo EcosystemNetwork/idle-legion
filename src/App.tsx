@@ -134,7 +134,8 @@ import {
 } from "./game/streak";
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
-import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
+import { useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
+import { MuteButton } from "./fx/MuteButton";
 import { flush, identify, initTelemetry, markLogin } from "./lib/telemetry";
 
 const GOLD_CHIP = ".chip-stat.gold";
@@ -596,6 +597,10 @@ export default function App() {
             setMirrorReveal(null);
             setTab("operator");
           }}
+          onConnect={() => {
+            setMirrorReveal(null);
+            setTab("market");
+          }}
         />
       )}
 
@@ -964,10 +969,12 @@ function MirrorModal({
   reveal,
   onClose,
   onOperator,
+  onConnect,
 }: {
   reveal: { status: string; serial?: number | null; remaining?: number; total?: number };
   onClose: () => void;
   onOperator: () => void;
+  onConnect: () => void;
 }) {
   useEffect(() => {
     if (reveal.status !== "claimed") return;
@@ -1017,6 +1024,21 @@ function MirrorModal({
         <div className="reveal-title">Too many claims from your network</div>
         <div className="reveal-sub">The deep guards against greed. Try again tomorrow — your streak is safe.</div>
         <div className="reveal-actions"><button className="btn" onClick={onClose}>Understood</button></div>
+      </>
+    );
+  } else if (reveal.status === "needs_identity") {
+    body = (
+      <>
+        <div className="mirror-orb" aria-hidden>🔮</div>
+        <div className="reveal-title" style={{ color: "#c9a3ff" }}>Bind the mirror to your name</div>
+        <div className="reveal-sub">
+          Only {SCRYING_MIRROR_SUPPLY} mirrors exist — one per account. Connect your wallet or Magic
+          email to claim yours. Your streak is safe until you do.
+        </div>
+        <div className="reveal-actions">
+          <button className="btn secondary" onClick={onClose}>Later</button>
+          <button className="btn" onClick={onConnect}>Connect to claim ▸</button>
+        </div>
       </>
     );
   } else {
@@ -1689,7 +1711,8 @@ function ArenaView({ game }: { game: Game }) {
       shake(crit ? 9 : 4);
       burst(c.x, c.y - 10, { color: crit ? "#ffd76b" : "#ff8a7a", count: crit ? 18 : 10, kind: "spark", power: crit ? 6 : 4 });
       floatText(c.x + (Math.random() * 80 - 40), c.y - 10, `-${formatNum(res.damage)}`, { color: crit ? "#ffd76b" : "#ff9a8a", crit });
-      crit ? sfx.crit() : sfx.hit();
+      if (crit) sfx.crit();
+      else sfx.hit();
     }
   };
   return (
@@ -2454,7 +2477,8 @@ function WorldBossView({ game }: { game: Game }) {
     burst(c.x, c.y, { color: hit.killed ? "#ff7a3d" : "#ffd76b", count: hit.killed ? 40 : 16, kind: "spark", power: hit.killed ? 9 : 5 });
     floatText(c.x, c.y - 10, `-${formatNum(hit.damage)}`, { color: "#ffd76b", crit: hit.killed });
     setFlash(hit.killed ? `💥 ${worldBossName(state)} FELLED! Cycle payout ↓` : `Struck for ${formatNum(hit.damage)}!`);
-    hit.killed ? sfx.boom() : sfx.hit();
+    if (hit.killed) sfx.boom();
+    else sfx.hit();
   };
 
   return (
