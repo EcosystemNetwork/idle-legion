@@ -30,6 +30,8 @@ dist-ssr
 public/grok-*.jpg
 public/Lit.jpg
 
-# Raw 3D model dump — curated model is public/art/kekius-boss.glb
+# Raw per-clip 3D model dump (kept local, out of public/ so Vite never ships it).
+# The curated, consolidated runtime model is public/art/kekius-boss.glb, built
+# from these via `node scripts/build-boss.mjs`.
+art-src/
 public/art/Meshy_AI_*/
-public/art/Meshy_AI_Kekius_Maximus_Boss__biped/

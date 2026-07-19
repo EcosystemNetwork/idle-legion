@@ -836,6 +836,28 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 }
 .boss-hpbar b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; font-weight: 800; color: #fff; text-shadow: 0 1px 3px #000; }
 .boss-flash { margin-top: 10px; font-family: var(--font-head); font-size: 18px; color: var(--amber); text-shadow: 0 2px 6px #000; animation: pop 0.5s ease; }
+
+/* Live 3D boss stage — the transparent WebGL canvas composits over a themed
+   arena backdrop; the veil + HP bar still sit on top for legibility. */
+.boss-stage--3d {
+  min-height: 340px;
+  background:
+    radial-gradient(120% 90% at 50% 12%, rgba(157,91,255,0.22), rgba(8,6,14,0) 60%),
+    radial-gradient(80% 60% at 50% 100%, rgba(255,90,50,0.16), rgba(8,6,14,0) 70%),
+    linear-gradient(180deg, #17111f, #0a0710 70%);
+}
+.boss-3d { position: absolute; inset: 0; z-index: 1; }
+.boss-3d canvas { touch-action: none; }
+.boss-3d-spinner {
+  position: absolute; inset: 0; z-index: 1; margin: auto; width: 42px; height: 42px;
+  border-radius: 50%; border: 3px solid rgba(255,255,255,0.15); border-top-color: var(--amber);
+  align-self: center; animation: boss-spin 0.9s linear infinite;
+}
+.boss-3d-fallback {
+  position: absolute; inset: 0; z-index: 0; background-size: cover; background-position: center;
+  background-image: var(--boss-poster, none);
+}
+@keyframes boss-spin { to { transform: rotate(360deg); } }
 .arena-controls {
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
   border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(0,0,0,0.3); padding: 14px; margin-bottom: 12px;
@@ -1026,3 +1048,33 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .master-name { font-family: var(--font-head); color: #fff; font-size: 15px; }
 .master-might { color: #ff8a7a; font-weight: 800; font-size: 14px; }
 .master-cta { font-size: 11px; color: var(--muted); }
+
+/* ---------------- Codex (classified art gallery) ---------------- */
+.codex-group { margin-bottom: 6px; }
+.codex-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.codex-card {
+  display: flex; flex-direction: column;
+  border: 2px solid #000; border-top: 4px solid var(--rar, var(--cyan));
+  border-radius: 12px; overflow: hidden;
+  background: rgba(0, 0, 0, 0.34);
+  box-shadow: 0 0 16px -8px var(--rar);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.codex-card:hover { transform: translateY(-3px); box-shadow: 0 6px 20px -8px var(--rar); }
+.codex-img {
+  width: 100%; aspect-ratio: 1 / 1; object-fit: cover;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.codex-body { padding: 8px 9px 9px; display: flex; flex-direction: column; gap: 3px; }
+.codex-name {
+  font-family: var(--font-head); font-size: 12px; color: #fff; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.codex-rar { font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
+.codex-price { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; font-size: 11px; font-weight: 700; }
+.cx-gold { color: var(--gold); }
+.cx-usd { color: var(--cyan); }

@@ -126,6 +126,21 @@ export interface BossDef {
   img: string;
   baseHp: number;
   reward: number; // gold on defeat
+  /** Optional animated 3D model (GLB). When set, the Arena renders it live. */
+  model?: string;
+}
+
+/** A listing on the on-chain Bazaar (settled via Universal Accounts → Arbitrum USDT). */
+export interface OnchainListing {
+  id: string;
+  kind: "hero" | "gear" | "boost";
+  label: string;
+  sub: string;
+  img: string;
+  priceUsd: number;
+  rarity: Rarity;
+  tier?: Tier;
+  defId?: string;
 }
 
 export interface ArenaState {
@@ -144,6 +159,14 @@ export interface MarketOffer {
   price: number;
 }
 
+/** Summary of what the legion produced while the tab was closed. */
+export interface OfflineSummary {
+  seconds: number; // time away (capped)
+  gold: number;
+  provisions: number; // net (can be negative if the legion starved)
+  recruits: number; // dwellers the Great Hall raised while away
+}
+
 export interface GameState {
   gold: number;
   provisions: number;
@@ -156,11 +179,16 @@ export interface GameState {
   arena: ArenaState;
   activeRaid: ActiveRaid | null;
   incident: Incident | null;
+  squad: string[]; // dweller ids hand-picked for raids/arena (empty = send all idle)
   // On-chain war chest → permanent mercenary production multiplier
   warChestUsd: number;
   mercenaryBoost: number;
   fundedOnchain: boolean;
   lastFundTxId: string | null;
+  // Prestige — "Descend deeper": bank Renown for a permanent, run-spanning boost
+  renown: number; // banked prestige currency (survives descents)
+  descents: number; // times the legion has abandoned a stronghold to dig deeper
+  offlineSummary: OfflineSummary | null; // pending "while you were away" report
   totalRaids: number;
   totalGoldEarned: number;
   totalBossWins: number;

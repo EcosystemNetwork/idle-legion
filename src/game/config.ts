@@ -2,6 +2,7 @@ import type {
   Aptitude,
   BossDef,
   GearDef,
+  OnchainListing,
   RaidMission,
   Rarity,
   RoomDef,
@@ -9,8 +10,29 @@ import type {
   Tier,
   TierDef,
 } from "./types";
+import { CATALOG_GEAR, CATALOG_LISTINGS } from "./assets";
 
-export const STORAGE_KEY = "idle-legion-v4";
+export const STORAGE_KEY = "idle-legion-v5";
+
+/** Salt for the save-integrity signature (deters casual localStorage edits). */
+export const SAVE_SALT = "kekius-rose-from-the-mempool";
+
+// ---------- Offline earnings (the "while you were away" hook) ----------
+/** Only summarise absences longer than this (seconds). */
+export const OFFLINE_MIN_SEC = 60;
+/** Cap credited offline time — 8 hours of a good night's dig. */
+export const OFFLINE_CAP_SEC = 8 * 3600;
+/** Offline runs at reduced efficiency vs. an open, tended stronghold. */
+export const OFFLINE_EFFICIENCY = 0.5;
+
+// ---------- Prestige — "Descend deeper" ----------
+/** Lifetime gold (this run) needed before the first descent is offered. */
+export const DESCEND_MIN_GOLD = 25_000;
+/** Renown = sqrt(runGold / divisor) + bossWins * perBoss. */
+export const RENOWN_GOLD_DIVISOR = 4_000;
+export const RENOWN_PER_BOSS = 2;
+/** Each point of banked Renown adds this to the global output multiplier. */
+export const RENOWN_BOOST_PER = 0.03; // +3% output per Renown
 
 export const APTITUDE_LABEL: Record<Aptitude, string> = {
   labor: "Labor",
@@ -295,7 +317,8 @@ export const RARITY_META: Record<
 };
 
 // ---------- Equipment catalog (Crypto Dynasty gear) ----------
-export const GEAR_CATALOG: GearDef[] = [
+/** Hand-authored core gear. The classified art set (CATALOG_GEAR) is appended below. */
+const CORE_GEAR: GearDef[] = [
   // weapons
   { id: "w_dagger", name: "Rusted Dagger", slot: "weapon", rarity: "common", img: `${B}art/gear-w-dagger.jpg`, might: 4, output: 0 },
   { id: "w_trident", name: "Retiarius Trident", slot: "weapon", rarity: "rare", img: `${B}art/gear-w-trident.jpg`, might: 12, output: 0 },
@@ -312,6 +335,9 @@ export const GEAR_CATALOG: GearDef[] = [
   { id: "m_mule", name: "Pack Mule", slot: "mount", rarity: "uncommon", img: `${B}art/gear-m-mule.jpg`, might: 4, output: 3 },
 ];
 
+/** Full gear pool: hand-authored core + the classified art set (weapons/armor/accessories/mounts). */
+export const GEAR_CATALOG: GearDef[] = [...CORE_GEAR, ...CATALOG_GEAR];
+
 export const GEAR_BY_ID: Record<string, GearDef> = Object.fromEntries(
   GEAR_CATALOG.map((g) => [g.id, g]),
 );
@@ -320,31 +346,23 @@ export const GEAR_BY_ID: Record<string, GearDef> = Object.fromEntries(
 export const BOSSES: BossDef[] = [
   { id: "caged", name: "The Caged Beast", img: `${B}art/boss-caged.jpg`, baseHp: 600, reward: 800 },
   { id: "chariot", name: "Rival Dynasty Charioteer", img: `${B}art/boss-chariot.jpg`, baseHp: 2600, reward: 3400 },
-  { id: "kekius", name: "Kekius the Tyrant — the dark timeline", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000 },
+  { id: "kekius", name: "Kekius the Tyrant — the dark timeline", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000, model: KEKIUS_MODEL },
 ];
 
 export const FIGHT_COOLDOWN_MS = 6000;
 
 // ---------- On-chain marketplace (settled via Universal Accounts → Arbitrum USDT) ----------
-export interface OnchainListing {
-  id: string;
-  kind: "hero" | "gear" | "boost";
-  label: string;
-  sub: string;
-  img: string;
-  priceUsd: number;
-  rarity: Rarity;
-  tier?: Tier;
-  defId?: string;
-}
-
-export const ONCHAIN_LISTINGS: OnchainListing[] = [
+/** Hand-authored featured listings; the classified art set (CATALOG_LISTINGS) is appended. */
+const CORE_LISTINGS: OnchainListing[] = [
   { id: "l_champ", kind: "hero", label: "Kekius Reborn", sub: "Legendary Champion gladiator", img: `${B}art/portrait-champion.jpg`, priceUsd: 0.3, rarity: "legendary", tier: "champion" },
   { id: "l_cav", kind: "hero", label: "Steppe Raider", sub: "Epic Cavalry gladiator", img: `${B}art/portrait-cavalry.jpg`, priceUsd: 0.1, rarity: "epic", tier: "cavalry" },
   { id: "l_blades", kind: "gear", label: "Emberforged Blades", sub: "Legendary weapon · +36 ⚔", img: `${B}art/gear-w-blades.jpg`, priceUsd: 0.2, rarity: "legendary", defId: "w_blades" },
   { id: "l_aegis", kind: "gear", label: "Kekius Maximus Aegis", sub: "Legendary armor · +28 ⚔", img: `${B}art/gear-a-kekius.jpg`, priceUsd: 0.25, rarity: "legendary", defId: "a_kekius" },
   { id: "l_company", kind: "boost", label: "Free Company Contract", sub: "Permanent boost to every room", img: `${B}art/controller.jpg`, priceUsd: 0.5, rarity: "epic" },
 ];
+
+/** Featured listings + every epic/legendary piece from the classified art set. */
+export const ONCHAIN_LISTINGS: OnchainListing[] = [...CORE_LISTINGS, ...CATALOG_LISTINGS];
 
 /** Gold a piece of gear fetches when sold back to the market. */
 export const GEAR_SELL_VALUE: Record<Rarity, number> = {

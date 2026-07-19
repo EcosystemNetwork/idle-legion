@@ -22,7 +22,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SRC_DIR = resolve(ROOT, 'public/art/Meshy_AI_Kekius_Maximus_Boss__biped');
+// Raw per-clip Meshy exports live OUTSIDE public/ so Vite never ships them.
+const SRC_DIR = resolve(ROOT, 'art-src/kekius-clips');
 const OUT = resolve(ROOT, 'public/art/kekius-boss.glb');
 
 // Clean, runtime-friendly clip names. Raw Meshy name -> our name.

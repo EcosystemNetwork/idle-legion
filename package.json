@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:boss": "node scripts/build-boss.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -16,6 +17,7 @@
     "magic-sdk": "^33.9.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "three": "^0.183.2",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -25,6 +27,7 @@
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.183.0",
     "@vitejs/plugin-react": "^6.0.3",
     "draco3dgltf": "^1.5.7",
     "oxlint": "^1.71.0",

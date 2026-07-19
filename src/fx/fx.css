@@ -1,0 +1,81 @@
+/* ---- juice: floating text + screen shake overlay ---- */
+#fx-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9000;
+}
+#fx-text {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9001;
+  overflow: hidden;
+}
+.fx-float {
+  position: absolute;
+  transform: translate(-50%, 0);
+  font-family: "Cinzel", Georgia, serif;
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.85), 0 0 10px currentColor;
+  will-change: transform, opacity;
+  animation: fxfloat 1s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+}
+.fx-float.crit {
+  font-size: 30px;
+  animation: fxcrit 1.15s cubic-bezier(0.2, 1.3, 0.3, 1) forwards;
+}
+.fx-float.big { font-size: 23px; }
+@keyframes fxfloat {
+  0% { transform: translate(-50%, 4px) scale(0.6); opacity: 0; }
+  16% { transform: translate(-50%, -6px) scale(1.12); opacity: 1; }
+  70% { opacity: 1; }
+  100% { transform: translate(-50%, -54px) scale(1); opacity: 0; }
+}
+@keyframes fxcrit {
+  0% { transform: translate(-50%, 8px) scale(0.3) rotate(-8deg); opacity: 0; }
+  18% { transform: translate(-50%, -10px) scale(1.4) rotate(4deg); opacity: 1; }
+  30% { transform: translate(-50%, -10px) scale(1.15) rotate(-3deg); }
+  75% { opacity: 1; }
+  100% { transform: translate(-50%, -70px) scale(1.05) rotate(0deg); opacity: 0; }
+}
+
+/* counter pulse when a resource chip receives value */
+.chip-stat.fx-bump .cv b { animation: fxbump 0.42s ease-out; }
+@keyframes fxbump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.28); filter: brightness(1.5); }
+  100% { transform: scale(1); }
+}
+
+/* mute toggle */
+.fx-mute {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 9002;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  background: rgba(12, 9, 20, 0.82);
+  color: #f4eefb;
+  font-size: 18px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  transition: transform 0.12s, border-color 0.12s;
+}
+.fx-mute:hover { transform: scale(1.08); border-color: rgba(255, 194, 51, 0.6); }
+.fx-mute:active { transform: scale(0.94); }
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-float, .fx-float.crit { animation-duration: 0.01ms; opacity: 0; }
+}

@@ -15,6 +15,14 @@ import {
   TIERS,
   TIER_ORDER,
   UPKEEP_PER_DWELLER,
+  DESCEND_MIN_GOLD,
+  OFFLINE_CAP_SEC,
+  OFFLINE_EFFICIENCY,
+  OFFLINE_MIN_SEC,
+  RENOWN_BOOST_PER,
+  RENOWN_GOLD_DIVISOR,
+  RENOWN_PER_BOSS,
+  SAVE_SALT,
   randomName,
 } from "./config";
 import type {
@@ -93,10 +101,14 @@ export function createInitialState(now = Date.now()): GameState {
     arena: { bossIndex: 0, bossHp: BOSSES[0].baseHp, rank: 999, wins: 0, lastFightAt: 0 },
     activeRaid: null,
     incident: null,
+    squad: [],
     warChestUsd: 0,
     mercenaryBoost: 0,
     fundedOnchain: false,
     lastFundTxId: null,
+    renown: 0,
+    descents: 0,
+    offlineSummary: null,
     totalRaids: 0,
     totalGoldEarned: 0,
     totalBossWins: 0,
@@ -249,6 +261,16 @@ export function aptitudeMatches(room: Room, d: Dweller): boolean {
   return apt != null && d.aptitude === apt;
 }
 
+/** Permanent, run-spanning production multiplier earned by descending (prestige). */
+export function renownBoost(state: GameState): number {
+  return state.renown * RENOWN_BOOST_PER;
+}
+
+/** Global output multiplier: on-chain Free Company + prestige Renown, stacked. */
+export function globalBoost(state: GameState): number {
+  return state.mercenaryBoost + renownBoost(state);
+}
+
 /** Live per-second output of a room (gold / provisions / might), boosts applied. */
 export function roomRate(state: GameState, room: Room, fed: boolean): number {
   const def = ROOMS[room.type];
@@ -262,10 +284,24 @@ export function roomRate(state: GameState, room: Room, fed: boolean): number {
     if (def.aptitude && d.aptitude === def.aptitude) o *= 1 + MATCH_BONUS;
     rate += o;
   }
-  rate *= 1 + state.mercenaryBoost;
+  rate *= 1 + globalBoost(state);
   // Starving hurts mining & forging, but NOT hunting (so the vault can recover).
   if (!fed && def.produces !== "provisions") rate *= STARVING_PENALTY;
   return rate;
+}
+
+/**
+ * Fix #1 — the War Forge is real. Every point of might the Forge beats out arms
+ * whoever the legion sends topside. This is the arsenal the squad carries into a
+ * raid or the arena; it is added to squad power in `squadPower` below.
+ */
+export function forgeMight(state: GameState): number {
+  const fed = state.provisions > 0;
+  let m = 0;
+  for (const room of state.rooms) {
+    if (ROOMS[room.type].produces === "might") m += roomRate(state, room, fed);
+  }
+  return m;
 }
 
 export function deriveStats(state: GameState): DerivedStats {
@@ -649,6 +685,50 @@ export function rushRoom(state: GameState, roomId: string): GameState {
   };
 }
 
+// ---------- squad selection (Fix #4) ----------
+
+/** Dwellers currently available to fight (idle, not already out on a raid). */
+export function idleDwellers(state: GameState): Dweller[] {
+  return state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id));
+}
+
+/**
+ * The squad you actually send. If you've hand-picked members (and any are
+ * available) only those go; otherwise the whole idle bench marches — so the
+ * one-tap "send everyone" flow still works, but picking a squad is a real
+ * decision: roster depth vs. concentrated power.
+ */
+export function effectiveSquad(state: GameState): Dweller[] {
+  const idle = idleDwellers(state);
+  const chosen = idle.filter((d) => state.squad.includes(d.id));
+  return chosen.length ? chosen : idle;
+}
+
+/** Squad might = each fighter's might + the whole Forge arsenal (Fix #1). */
+export function squadPower(state: GameState, squad: Dweller[]): number {
+  const base = squad.reduce((s, d) => s + dwellerMight(d, state), 0);
+  return base + (squad.length ? forgeMight(state) : 0);
+}
+
+export function toggleSquad(state: GameState, dwellerId: string): GameState {
+  const inSquad = state.squad.includes(dwellerId);
+  return {
+    ...state,
+    squad: inSquad
+      ? state.squad.filter((id) => id !== dwellerId)
+      : [...state.squad, dwellerId],
+  };
+}
+
+/** Hand-pick the entire idle bench (explicit "send all"). */
+export function selectAllIdle(state: GameState): GameState {
+  return { ...state, squad: idleDwellers(state).map((d) => d.id) };
+}
+
+export function clearSquad(state: GameState): GameState {
+  return { ...state, squad: [] };
+}
+
 // ---------- raids ----------
 
 export function startRaid(
@@ -662,24 +742,22 @@ export function startRaid(
   const hasWarRoom = state.rooms.some((r) => r.type === "warroom");
   if (!hasWarRoom) throw new Error("Dig a War Room to plan raids.");
 
-  // Squad = all idle dwellers (pulled off the Hall bench).
-  const squad = state.dwellers
-    .filter((d) => d.roomId == null && !isOnRaid(state, d.id))
-    .map((d) => d.id);
+  const roster = effectiveSquad(state);
+  const squad = roster.map((d) => d.id);
   if (squad.length === 0) {
     throw new Error("No idle dwellers to send — unassign some legion first.");
   }
-  const might = squad.reduce((sum, id) => {
-    const d = dwellerById(state, id);
-    return sum + (d ? dwellerMight(d, state) : 0);
-  }, 0);
+  const might = squadPower(state, roster);
   if (might < mission.minMight) {
     throw new Error(
-      `Squad might ${Math.floor(might)} < ${mission.minMight}. Send stronger dwellers.`,
+      `Squad might ${Math.floor(might)} < ${mission.minMight}. Forge more might or send stronger dwellers.`,
     );
   }
   return {
     ...state,
+    // Once they march, clear the picks that are now committed so the next raid
+    // starts from a clean bench selection.
+    squad: state.squad.filter((id) => !squad.includes(id)),
     activeRaid: {
       missionId,
       squad,
@@ -707,9 +785,7 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
 }
 
 export function raidSquadMight(state: GameState): number {
-  return state.dwellers
-    .filter((d) => d.roomId == null && !isOnRaid(state, d.id))
-    .reduce((sum, d) => sum + dwellerMight(d, state), 0);
+  return squadPower(state, effectiveSquad(state));
 }
 
 // ---------- on-chain war chest ----------
@@ -730,6 +806,44 @@ export function applyWarChestFunding(
     mercenaryBoost: boost,
     fundedOnchain: true,
     lastFundTxId: txId ?? state.lastFundTxId,
+  };
+}
+
+// ---------- prestige: Descend deeper (Fix #2) ----------
+
+/** Renown this run would bank right now if the legion descended. */
+export function pendingRenown(state: GameState): number {
+  const fromGold = Math.floor(Math.sqrt(state.totalGoldEarned / RENOWN_GOLD_DIVISOR));
+  const fromBoss = state.totalBossWins * RENOWN_PER_BOSS;
+  return Math.max(0, fromGold + fromBoss);
+}
+
+/** Can the legion abandon this stronghold and dig a deeper one? */
+export function canDescend(state: GameState): boolean {
+  return state.totalGoldEarned >= DESCEND_MIN_GOLD && pendingRenown(state) >= 1;
+}
+
+/**
+ * Abandon the current stronghold and dig deeper. The run resets — rooms,
+ * gladiators, gold, gear, raids, arena — but banked **Renown** (and everything
+ * you paid *real* money for on-chain) carries over. More Renown = a permanent
+ * head start on every future run. This is the idle-game endgame loop.
+ */
+export function descend(state: GameState, now = Date.now()): GameState {
+  const gain = pendingRenown(state);
+  if (!canDescend(state)) {
+    throw new Error("Not deep enough yet — earn more gold (and beat bosses) before you descend.");
+  }
+  const fresh = createInitialState(now);
+  return {
+    ...fresh,
+    renown: state.renown + gain,
+    descents: state.descents + 1,
+    // On-chain purchases are permanent — the player paid real, cross-chain money.
+    warChestUsd: state.warChestUsd,
+    mercenaryBoost: state.mercenaryBoost,
+    fundedOnchain: state.fundedOnchain,
+    lastFundTxId: state.lastFundTxId,
   };
 }
 
@@ -816,11 +930,11 @@ export function openLunchbox(state: GameState): { state: GameState; pull: Pull }
 export type FightResult = { damage: number; killed: boolean; reward: number; bossName: string };
 
 export function arenaSquad(state: GameState): Dweller[] {
-  return state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id));
+  return effectiveSquad(state);
 }
 
 export function arenaSquadPower(state: GameState): number {
-  return arenaSquad(state).reduce((s, d) => s + dwellerMight(d, state), 0);
+  return squadPower(state, arenaSquad(state));
 }
 
 export function currentBoss(state: GameState) {
@@ -870,17 +984,91 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
   return { state: s, result: { damage: dmg, killed, reward: goldGain, bossName: boss.name } };
 }
 
+// ---------- offline earnings (Fix #3) ----------
+
+/**
+ * Credit production for time the tab was closed. Unlike online storage (capped
+ * per room), offline pays a direct lump at reduced efficiency up to a time cap —
+ * the standard idle-game "welcome back" hook. We advance `lastTick` to now so a
+ * following `tick()` can't double-count the same gap.
+ */
+export function applyOffline(state: GameState, now: number): GameState {
+  const elapsed = Math.max(0, (now - state.lastTick) / 1000);
+  // Short gap (or a rewound clock) → just tick normally, no report.
+  if (elapsed < OFFLINE_MIN_SEC) return tick(state, now);
+
+  const capped = Math.min(elapsed, OFFLINE_CAP_SEC);
+  const stats = deriveStats(state);
+  const gold = Math.floor(Math.max(0, stats.goldPerSec) * capped * OFFLINE_EFFICIENCY);
+  const provisions = Math.floor(stats.provisionsPerSec * capped * OFFLINE_EFFICIENCY);
+
+  // The Great Hall keeps raising recruits while you're away (if fed & housed).
+  const hall = state.rooms.find((r) => r.type === "hall");
+  let recruits = 0;
+  if (hall && stats.fed) {
+    const space = Math.max(0, maxPopulation(state) - state.dwellers.length);
+    recruits = Math.min(space, Math.floor(0.04 * hall.level * capped * OFFLINE_EFFICIENCY));
+  }
+  const dwellers = [...state.dwellers];
+  for (let i = 0; i < recruits; i++) dwellers.push(makeDweller("recruit"));
+
+  return {
+    ...state,
+    gold: state.gold + gold,
+    totalGoldEarned: state.totalGoldEarned + gold,
+    provisions: Math.max(0, state.provisions + provisions),
+    dwellers,
+    // any incident would have been fought off long ago
+    incident: state.incident && now >= state.incident.endsAt ? null : state.incident,
+    offlineSummary: { seconds: Math.floor(capped), gold, provisions, recruits },
+    lastTick: now,
+  };
+}
+
+export function clearOfflineSummary(state: GameState): GameState {
+  return state.offlineSummary ? { ...state, offlineSummary: null } : state;
+}
+
 // ---------- persistence ----------
+
+/** Small non-crypto hash (FNV-1a) — raises the bar on casual save edits. */
+function signSave(json: string): string {
+  let h = 0x811c9dc5;
+  const s = json + SAVE_SALT;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
 
 export function loadState(): GameState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return createInitialState();
-    const parsed = JSON.parse(raw) as GameState;
+
+    const outer = JSON.parse(raw) as { sig?: string; data?: string };
+    let parsed: GameState;
+    if (outer && typeof outer.data === "string" && typeof outer.sig === "string") {
+      // Signed save — reject if the integrity signature doesn't match (Fix #5).
+      if (signSave(outer.data) !== outer.sig) return createInitialState();
+      parsed = JSON.parse(outer.data) as GameState;
+    } else {
+      // Legacy unsigned save — accept once; it re-saves signed on next write.
+      parsed = outer as unknown as GameState;
+    }
+
     if (!parsed || !Array.isArray(parsed.rooms) || !Array.isArray(parsed.dwellers)) {
       return createInitialState();
     }
-    return tick({ ...createInitialState(), ...parsed }, Date.now());
+    // Merge over a fresh state so new fields (squad/renown/…) always exist.
+    const merged: GameState = {
+      ...createInitialState(),
+      ...parsed,
+      squad: Array.isArray(parsed.squad) ? parsed.squad : [],
+      offlineSummary: null,
+    };
+    return applyOffline(merged, Date.now());
   } catch {
     return createInitialState();
   }
@@ -888,7 +1076,9 @@ export function loadState(): GameState {
 
 export function saveState(state: GameState) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    // Never persist a pending offline report — it's a one-time UI event.
+    const data = JSON.stringify({ ...state, offlineSummary: null });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sig: signSave(data), data }));
   } catch {
     // storage full / unavailable — ignore
   }

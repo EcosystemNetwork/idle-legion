@@ -1,5 +1,9 @@
-import { createElement, useState } from "react";
+import { createElement, lazy, Suspense, useEffect, useState } from "react";
 import "@google/model-viewer";
+
+// Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
+// initial bundle and only loads when a player opens the Arena on a 3D boss.
+const BossStage = lazy(() => import("./components/BossStage"));
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
@@ -16,8 +20,13 @@ import {
   ROOM_ART,
   TIERS,
   TIER_PORTRAIT,
-  type OnchainListing,
 } from "./game/config";
+import {
+  ASSET_CATALOG,
+  ASSET_TYPE_LABEL,
+  assetsByType,
+  type AssetType,
+} from "./game/assets";
 import {
   arenaSquad,
   arenaSquadPower,
@@ -46,14 +55,18 @@ import {
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { Dweller, GameState, GearSlot, Room, Tier } from "./game/types";
+import type { Dweller, GameState, GearSlot, OnchainListing, Room, Tier } from "./game/types";
 import "./App.css";
+import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
+import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
+
+const GOLD_CHIP = ".chip-stat.gold";
 
 function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "stronghold" | "legion" | "arena" | "raids" | "market";
+type Tab = "stronghold" | "legion" | "arena" | "raids" | "market" | "codex";
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
@@ -140,12 +153,16 @@ export default function App() {
   const [reveal, setReveal] = useState<Pull | null>(null);
   const [email, setEmail] = useState("");
 
+  useUiSounds();
+  useTabTitleEarnings(stats.goldPerSec, stats.fed);
+
   const assignRoom = assignRoomId ? state.rooms.find((r) => r.id === assignRoomId) : null;
   const hero = heroId ? dwellerById(state, heroId) : null;
 
   const openBox = () => {
     const pull = game.openLunchbox();
     if (pull) setReveal(pull);
+    else sfx.error();
   };
 
   // Buy a marketplace asset — settles cross-chain as USDT on Arbitrum via UA,
@@ -197,6 +214,7 @@ export default function App() {
             ["arena", "⚔️ Arena"],
             ["raids", "🗺️ Raids"],
             ["market", "🏛️ Market"],
+            ["codex", "📜 Codex"],
           ] as const
         ).map(([id, label]) => (
           <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
@@ -255,6 +273,8 @@ export default function App() {
         />
       )}
 
+      {tab === "codex" && <CodexView />}
+
       {assignRoom && (
         <AssignModal
           room={assignRoom}
@@ -288,6 +308,8 @@ export default function App() {
           Reset save
         </button>
       </footer>
+
+      <MuteButton />
     </div>
   );
 }
@@ -308,9 +330,10 @@ function ResourceBar({
   onOpenBox: () => void;
 }) {
   const anyReady = state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1);
+  const goldShown = useCountUp(state.gold);
   return (
     <section className="resources">
-      <Chip cls="gold" icon="🪙" v={formatNum(state.gold)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
+      <Chip cls="gold" icon="🪙" v={formatNum(goldShown)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
       <Chip
         cls={`prov ${stats.fed ? "" : "warn"}`}
         icon="🌾"
@@ -332,7 +355,17 @@ function ResourceBar({
         v={wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
         s={wallet.session ? shortAddr(wallet.session.address) : "offline"}
       />
-      <button type="button" className={`collect-all ${anyReady ? "ready" : ""}`} disabled={!anyReady} onClick={onCollectAll}>
+      <button
+        type="button"
+        className={`collect-all ${anyReady ? "ready" : ""}`}
+        disabled={!anyReady}
+        onClick={(e) => {
+          const c = centerOf(e.currentTarget);
+          coinArc(c, GOLD_CHIP, 22);
+          ring(c.x, c.y, "#9dfab0", 20);
+          onCollectAll();
+        }}
+      >
         Collect all
       </button>
     </section>
@@ -566,7 +599,26 @@ function Chamber({
       )}
 
       {ready && resImg && (
-        <button type="button" className="bubble" onClick={() => actions.collect(room.id)}>
+        <button
+          type="button"
+          className="bubble"
+          onClick={(e) => {
+            const c = centerOf(e.currentTarget);
+            const res = def.produces;
+            if (res === "gold") {
+              const coins = Math.min(24, 6 + Math.round(Math.log10(stored + 1) * 6));
+              coinArc(c, GOLD_CHIP, coins);
+              ring(c.x, c.y, "#ffd76b", 16);
+              floatText(c.x, c.y - 8, `+${formatNum(stored)}`, { color: "#ffe08a", big: stored > 100 });
+            } else {
+              const color = res === "provisions" ? "#5fe38a" : "#ff8a7a";
+              burst(c.x, c.y, { color, count: 12, kind: "spark", power: 4 });
+              floatText(c.x, c.y - 8, `+${formatNum(stored)}`, { color });
+              sfx.collect();
+            }
+            actions.collect(room.id);
+          }}
+        >
           <img className="b-img" src={resImg} alt="" aria-hidden />
           <span className="b-amt">+{formatNum(stored)}</span>
         </button>
@@ -751,6 +803,9 @@ function Objectives({ state, actions, onOpenBox }: { state: GameState; actions: 
 function ArenaView({ game }: { game: Game }) {
   const { state, now, fightBoss } = game;
   const [flash, setFlash] = useState<string | null>(null);
+  // Combat → animation triggers for the live 3D boss (see BossStage).
+  const [hitToken, setHitToken] = useState(0);
+  const [killToken, setKillToken] = useState(0);
   const boss = currentBoss(state);
   const squad = arenaSquad(state);
   const power = Math.floor(arenaSquadPower(state));
@@ -758,7 +813,30 @@ function ArenaView({ game }: { game: Game }) {
   const cd = Math.max(0, 6000 - (now - state.arena.lastFightAt));
   const onFight = () => {
     const res = fightBoss();
-    if (res) setFlash(res.killed ? `💥 ${res.bossName} DEFEATED! +${formatNum(res.reward)}g +🎁` : `Hit for ${formatNum(res.damage)}!`);
+    if (!res) {
+      sfx.error();
+      return;
+    }
+    const c = centerOf(document.querySelector(".boss-stage"));
+    if (res.killed) {
+      setFlash(`💥 ${res.bossName} DEFEATED! +${formatNum(res.reward)}g +🎁`);
+      setKillToken((k) => k + 1);
+      shake(16);
+      ring(c.x, c.y, "#ff3b2f", 30);
+      burst(c.x, c.y, { color: "#ff7a3d", count: 40, kind: "shard", power: 9 });
+      burst(c.x, c.y, { color: "#ffe08a", count: 24, kind: "spark", power: 7 });
+      floatText(c.x, c.y - 20, "DEFEATED!", { color: "#ffd76b", crit: true });
+      sfx.boom();
+      sfx.legendary();
+    } else {
+      const crit = res.damage >= power; // a strong roll
+      setFlash(`Hit for ${formatNum(res.damage)}!`);
+      setHitToken((h) => h + 1);
+      shake(crit ? 9 : 4);
+      burst(c.x, c.y - 10, { color: crit ? "#ffd76b" : "#ff8a7a", count: crit ? 18 : 10, kind: "spark", power: crit ? 6 : 4 });
+      floatText(c.x + (Math.random() * 80 - 40), c.y - 10, `-${formatNum(res.damage)}`, { color: crit ? "#ffd76b" : "#ff9a8a", crit });
+      crit ? sfx.crit() : sfx.hit();
+    }
   };
   return (
     <section className="panel arena">
@@ -767,7 +845,15 @@ function ArenaView({ game }: { game: Game }) {
         <div className="rank-chip">🏆 Rank #{state.arena.rank} · {state.arena.wins} wins</div>
       </div>
 
-      <div className="boss-stage" style={{ backgroundImage: `url(${boss.img})` }}>
+      <div
+        className={`boss-stage${boss.model ? " boss-stage--3d" : ""}`}
+        style={boss.model ? undefined : { backgroundImage: `url(${boss.img})` }}
+      >
+        {boss.model && (
+          <Suspense fallback={<div className="boss-3d-spinner" aria-label="Summoning the boss…" />}>
+            <BossStage modelUrl={boss.model} poster={boss.img} hitToken={hitToken} killToken={killToken} />
+          </Suspense>
+        )}
         <div className="boss-veil" />
         <div className="boss-body">
           <div className="boss-name">{boss.name}</div>
@@ -1014,6 +1100,27 @@ function RevealModal({ pull, more, onAgain, onClose }: { pull: Pull; more: numbe
     sub = `${TIERS[pull.dweller.tier].name} · ${RARITY[pull.dweller.tier].name}`;
     color = RARITY[pull.dweller.tier].color;
   }
+
+  // rarity of this pull drives how hyped the burst + fanfare is
+  const legendary =
+    (pull.kind === "gear" && pull.rarity === "legendary") ||
+    (pull.kind === "hero" && (pull.dweller.tier === "champion" || pull.dweller.tier === "cavalry"));
+  useEffect(() => {
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    if (legendary) {
+      shake(10);
+      ring(cx, cy, color, 26);
+      burst(cx, cy, { color, count: 46, kind: "shard", power: 9 });
+      burst(cx, cy, { color: "#fff0b0", count: 26, kind: "spark", power: 6 });
+      sfx.legendary();
+    } else {
+      ring(cx, cy, color, 18);
+      burst(cx, cy, { color, count: 20, kind: "spark", power: 5 });
+      sfx.reveal();
+    }
+  }, [color, legendary]);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal reveal" onClick={(e) => e.stopPropagation()} style={{ ["--rar" as string]: color }}>
@@ -1245,5 +1352,57 @@ function AssignModal({
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------- Codex (read-only gallery of the whole classified art set) ----------------
+
+const CODEX_ORDER: AssetType[] = [
+  "hero", "boss", "weapon", "armor", "accessory", "mount",
+  "room", "raid", "crate", "banner", "icon", "other",
+];
+
+function CodexView() {
+  const total = ASSET_CATALOG.length;
+  return (
+    <section className="market codex">
+      <div className="market-head">
+        <span className="market-title">📜 Codex of the Deep · {total} classified relics</span>
+        <span className="muted small">Every asset, typed &amp; priced. Gold = market value · ＄ = on-chain (USDT)</span>
+      </div>
+
+      {CODEX_ORDER.map((type) => {
+        const items = assetsByType(type);
+        if (!items.length) return null;
+        return (
+          <div key={type} className="codex-group">
+            <h3 className="mk-h">{ASSET_TYPE_LABEL[type]} <span className="muted small">· {items.length}</span></h3>
+            <div className="codex-grid">
+              {items.map((a) => (
+                <article
+                  key={a.file}
+                  className="codex-card"
+                  style={{ ["--rar" as string]: RARITY_META[a.rarity].color }}
+                  title={a.desc}
+                >
+                  <img className="codex-img" src={a.img} alt={a.name} loading="lazy" />
+                  <div className="codex-body">
+                    <div className="codex-name">{a.name}</div>
+                    <div className="codex-rar" style={{ color: RARITY_META[a.rarity].color }}>
+                      {stars(RARITY_META[a.rarity].stars)} {RARITY_META[a.rarity].name}
+                    </div>
+                    <div className="codex-price">
+                      {a.buyGold > 0 && <span className="cx-gold">🪙 {formatNum(a.buyGold)}</span>}
+                      {a.priceUsd > 0 && <span className="cx-usd">＄{a.priceUsd.toFixed(2)}</span>}
+                      {a.buyGold === 0 && a.priceUsd === 0 && <span className="muted small">not for sale</span>}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </section>
   );
 }

@@ -6,7 +6,7 @@
 // priceUsd = usdBase[rarity] * typeMult. Regenerate via scratchpad/assemble.
 // 96 assets total.
 // ---------------------------------------------------------------------------
-import type { Rarity } from "./types";
+import type { GearDef, GearSlot, OnchainListing, Rarity, Tier } from "./types";
 
 const B = import.meta.env.BASE_URL;
 
@@ -182,3 +182,102 @@ export function assetsByType(type: AssetType): AssetEntry[] {
 export function assetsByRarity(rarity: Rarity): AssetEntry[] {
   return ASSET_CATALOG.filter((a) => a.rarity === rarity);
 }
+
+// ---------------------------------------------------------------------------
+// Wiring the catalog into the live economy.
+// The equippable art (weapon/armor/accessory/mount) becomes real GearDefs so it
+// drops from lunchboxes, equips, and sells through the existing gear machinery;
+// the priced high-rarity pieces become on-chain Bazaar listings. See config.ts,
+// which folds CATALOG_GEAR into GEAR_CATALOG and CATALOG_LISTINGS into ONCHAIN_LISTINGS.
+// ---------------------------------------------------------------------------
+
+/** 3-slot equip model — accessories (helms, capes, amulets, relics) are worn as armor. */
+const SLOT_FOR_TYPE: Partial<Record<AssetType, GearSlot>> = {
+  weapon: "weapon",
+  armor: "armor",
+  accessory: "armor",
+  mount: "mount",
+};
+
+/** Synthesized combat stats by slot × rarity, scaled to match the hand-built GEAR_CATALOG. */
+const GEAR_STATS: Record<GearSlot, Record<Rarity, { might: number; output: number }>> = {
+  weapon: {
+    common: { might: 4, output: 0 },
+    uncommon: { might: 7, output: 0 },
+    rare: { might: 12, output: 0 },
+    epic: { might: 19, output: 1 },
+    legendary: { might: 34, output: 2 },
+  },
+  armor: {
+    common: { might: 3, output: 1 },
+    uncommon: { might: 5, output: 1 },
+    rare: { might: 9, output: 2 },
+    epic: { might: 15, output: 3 },
+    legendary: { might: 27, output: 4 },
+  },
+  mount: {
+    common: { might: 4, output: 2 },
+    uncommon: { might: 5, output: 3 },
+    rare: { might: 8, output: 3 },
+    epic: { might: 12, output: 3 },
+    legendary: { might: 18, output: 4 },
+  },
+};
+
+/** Stable gear id for a catalog asset (uuid fragment keeps it unique + save-safe). */
+function gearId(file: string): string {
+  return `kx_${file.slice(5, 13)}`;
+}
+
+/** Every equippable art asset, as a real GearDef. Folded into GEAR_CATALOG by config.ts. */
+export const CATALOG_GEAR: GearDef[] = ASSET_CATALOG.filter(
+  (a) => SLOT_FOR_TYPE[a.type],
+).map((a) => {
+  const slot = SLOT_FOR_TYPE[a.type]!;
+  const st = GEAR_STATS[slot][a.rarity];
+  return { id: gearId(a.file), name: a.name, slot, rarity: a.rarity, img: a.img, might: st.might, output: st.output };
+});
+
+/** Hero-portrait rarity → gladiator tier granted on purchase. */
+const HERO_TIER: Record<Rarity, Tier> = {
+  common: "recruit",
+  uncommon: "spearman",
+  rare: "archer",
+  epic: "cavalry",
+  legendary: "champion",
+};
+
+/**
+ * Premium on-chain Bazaar listings drawn from the catalog: every epic/legendary
+ * equippable piece (buyable → grants that exact gear) plus any hero portraits.
+ * Uses the priceUsd computed during classification. Folded into ONCHAIN_LISTINGS.
+ */
+export const CATALOG_LISTINGS: OnchainListing[] = ASSET_CATALOG.flatMap((a): OnchainListing[] => {
+  const slot = SLOT_FOR_TYPE[a.type];
+  if (slot && (a.rarity === "epic" || a.rarity === "legendary")) {
+    const st = GEAR_STATS[slot][a.rarity];
+    return [{
+      id: `mkt_${gearId(a.file)}`,
+      kind: "gear",
+      label: a.name,
+      sub: `${a.rarity} ${slot} · +${st.might}⚔`,
+      img: a.img,
+      priceUsd: a.priceUsd,
+      rarity: a.rarity,
+      defId: gearId(a.file),
+    }];
+  }
+  if (a.type === "hero") {
+    return [{
+      id: `mkt_${gearId(a.file)}`,
+      kind: "hero",
+      label: a.name,
+      sub: `${a.rarity} gladiator`,
+      img: a.img,
+      priceUsd: a.priceUsd,
+      rarity: a.rarity,
+      tier: HERO_TIER[a.rarity],
+    }];
+  }
+  return [];
+});
