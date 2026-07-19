@@ -29,3 +29,7 @@ dist-ssr
 # Raw AI asset dump — curated + optimized copies live in public/art/
 public/grok-*.jpg
 public/Lit.jpg
+
+# Raw 3D model dump — curated model is public/art/kekius-boss.glb
+public/art/Meshy_AI_*/
+public/art/Meshy_AI_Kekius_Maximus_Boss__biped/

@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { createElement, useState } from "react";
+import "@google/model-viewer";
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
   BUILDABLE,
   CRATE_IMG,
   IMG,
+  KEKIUS_MODEL,
   MERCENARY_TIERS,
   ONCHAIN_LISTINGS,
   RAIDS,
@@ -103,6 +105,29 @@ function GhostFigure({ onClick }: { onClick: () => void }) {
   );
 }
 
+// The animated 3D boss (Meshy GLB) rendered via <model-viewer>.
+function ModelBoss({ src }: { src: string }) {
+  return createElement("model-viewer", {
+    src,
+    poster: ROOM_ART.quarters, // 2D boss art shown until the 3D model loads (or if WebGL is off)
+    alt: "Kekius Maximus — the Master",
+    autoplay: true,
+    "camera-controls": true,
+    "auto-rotate": true,
+    "rotation-per-second": "18deg",
+    "auto-rotate-delay": 0,
+    "interaction-prompt": "none",
+    "disable-zoom": true,
+    "shadow-intensity": "0.9",
+    exposure: "1.15",
+    "camera-orbit": "0deg 88deg 2.7m",
+    "field-of-view": "30deg",
+    loading: "eager",
+    reveal: "auto",
+    style: { width: "100%", height: "100%", background: "transparent" },
+  });
+}
+
 // ---------------- App ----------------
 
 export default function App() {
@@ -142,7 +167,7 @@ export default function App() {
           </span>
           <div>
             <h1>Idle Legion</h1>
-            <p className="tagline">Collect heroes · Forge gear · Raid & rule the arena — funded on-chain</p>
+            <p className="tagline">They rugged the Surface. So we dug. · Raise a legion, raid the Wastes, stay Kekius — funded on-chain</p>
           </div>
         </div>
         <div className="track-badge">
@@ -350,12 +375,22 @@ function StrongholdView({
   return (
     <section className="vault">
       <div className="vault-sky">
-        <span className="cloud c1">☁️</span>
-        <span className="sun">🌄 THE SURFACE</span>
-        <span className="cloud c2">☁️</span>
+        <span className="sky-sun" aria-hidden />
+        <span className="sky-bird b1" aria-hidden />
+        <span className="sky-bird b2" aria-hidden />
+        <span className="cloud c1" aria-hidden>☁️</span>
+        <span className="surface-label">⛰ THE SURFACE</span>
+        <span className="cloud c2" aria-hidden>☁️</span>
+        <span className="sky-hills" aria-hidden />
       </div>
       <SlaveMarket state={state} actions={actions} />
       <div className="vault-body">
+        <div className="vault-strata" aria-hidden />
+        <div className="vault-dust" aria-hidden>
+          {Array.from({ length: 12 }).map((_, i) => (
+            <span key={i} className="mote" />
+          ))}
+        </div>
         <div className="elevator" aria-hidden>
           {state.rooms.map((r) => (
             <span key={r.id} className="rung" />
@@ -391,7 +426,7 @@ function SlaveMarket({ state, actions }: { state: GameState; actions: Actions })
   return (
     <div className="market">
       <div className="market-head">
-        <span className="market-title">⛓️ SLAVE MARKET — buy gladiators at the gate</span>
+        <span className="market-title">⛓️ SLAVE MARKET — fresh meat off the Wastes, buy at the gate</span>
         <button type="button" className="chip-btn" disabled={state.gold < rerollCost} onClick={() => actions.rerollMarket()}>
           🔄 New stock · 🪙 {formatNum(rerollCost)}
         </button>
@@ -460,6 +495,8 @@ function Chamber({
     room.type === "hall"
       ? state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id)).slice(0, 6)
       : [];
+  const master =
+    room.type === "quarters" ? state.dwellers.find((d) => d.roomId === room.id) : null;
 
   const acceptsDrop = cap > 0 || room.type === "hall";
   const onDrop = (e: React.DragEvent) => {
@@ -483,7 +520,13 @@ function Chamber({
       onDragLeave={() => setOver(false)}
       onDrop={onDrop}
     >
-      <img className="ch-art" src={ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
+      {room.type === "quarters" ? (
+        <div className="ch-model">
+          <ModelBoss src={KEKIUS_MODEL} />
+        </div>
+      ) : (
+        <img className="ch-art" src={ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
+      )}
       <div className="ch-glow" aria-hidden />
 
       <div className="ch-plaque">
@@ -493,21 +536,34 @@ function Chamber({
         {def.aptitude && <span className="ch-apt">{APTITUDE_ICON[def.aptitude]}</span>}
       </div>
 
-      <div className="ch-stage">
-        <div className="crew">
-          {workers.map((d) => (
-            <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
-          ))}
-          {cap > 0 &&
-            Array.from({ length: Math.max(0, cap - workers.length) }).map((_, i) => (
-              <GhostFigure key={i} onClick={() => onAssign(room.id)} />
-            ))}
-          {resting.map((d) => (
-            <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
-          ))}
+      {room.type === "quarters" ? (
+        <div className="ch-master">
+          {master && (
+            <button type="button" className="master-plate" onClick={() => onHero(master.id)}>
+              <span className="master-crown">👑</span>
+              <span className="master-name">{master.name}</span>
+              <span className="master-might">{Math.floor(dwellerMight(master, state))} ⚔</span>
+              <span className="master-cta">tap to equip</span>
+            </button>
+          )}
         </div>
-        <div className="ch-ground" aria-hidden />
-      </div>
+      ) : (
+        <div className="ch-stage">
+          <div className="crew">
+            {workers.map((d) => (
+              <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
+            ))}
+            {cap > 0 &&
+              Array.from({ length: Math.max(0, cap - workers.length) }).map((_, i) => (
+                <GhostFigure key={i} onClick={() => onAssign(room.id)} />
+              ))}
+            {resting.map((d) => (
+              <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
+            ))}
+          </div>
+          <div className="ch-ground" aria-hidden />
+        </div>
+      )}
 
       {ready && resImg && (
         <button type="button" className="bubble" onClick={() => actions.collect(room.id)}>
@@ -707,7 +763,7 @@ function ArenaView({ game }: { game: Game }) {
   return (
     <section className="panel arena">
       <div className="panel-head">
-        <h2>⚔️ The Arena · World Boss</h2>
+        <h2>⚔️ The Arena · World Boss · under the ruined Colosseum</h2>
         <div className="rank-chip">🏆 Rank #{state.arena.rank} · {state.arena.wins} wins</div>
       </div>
 
@@ -764,7 +820,7 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
   return (
     <section className="panel raids">
       <div className="panel-head">
-        <h2>🗺️ Raids · the Wastes</h2>
+        <h2>🗺️ Raids · the Wastes topside</h2>
         <p className="muted small">
           Idle squad might: <strong>{Math.floor(squadMight)} ⚔</strong> · every raid drops a 🎁 lunchbox
         </p>
@@ -1003,11 +1059,12 @@ function MarketView({
       <div className="wc-hero" style={{ backgroundImage: `url(${IMG.chest})` }}>
         <div className="wc-hero-veil" />
         <div className="wc-hero-body">
-          <h2>🏛️ Marketplace</h2>
+          <h2>🏛️ Marketplace · the Bazaar</h2>
           <p className="muted">
-            Trade gladiators &amp; gear. Premium assets settle <strong>cross-chain as USDT on Arbitrum</strong> through
-            Particle <strong>Universal Accounts</strong> (<code>EIP-7702</code>) — pay from any chain, no bridge, no chain
-            switch. The whole economy runs on-chain.
+            Trade gladiators &amp; gear. The bridges died in the Rug — but the <strong>Universal Account</strong> reaches
+            any Chain and settles <strong>cross-chain as USDT on Arbitrum</strong>, the last honest Chain (Particle{" "}
+            <code>EIP-7702</code>). Pay from any chain, no bridge, no chain switch. The whole economy of the deep runs
+            on-chain.
           </p>
         </div>
       </div>

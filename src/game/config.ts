@@ -10,7 +10,7 @@ import type {
   TierDef,
 } from "./types";
 
-export const STORAGE_KEY = "idle-legion-v3";
+export const STORAGE_KEY = "idle-legion-v4";
 
 export const APTITUDE_LABEL: Record<Aptitude, string> = {
   labor: "Labor",
@@ -83,6 +83,18 @@ export const TIER_ORDER: Tier[] = [
 
 /** Room blueprints dug into the mountain. */
 export const ROOMS: Record<RoomType, RoomDef> = {
+  quarters: {
+    type: "quarters",
+    name: "Master's Quarters",
+    icon: "👑",
+    aptitude: null,
+    produces: null,
+    capacityPerLevel: 0,
+    storePerLevel: 0,
+    buildCost: 0,
+    description: "Home of the Master — your boss gladiator holds court here.",
+    unique: true,
+  },
   hall: {
     type: "hall",
     name: "Great Hall",
@@ -92,7 +104,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     capacityPerLevel: 0, // houses dwellers passively; no worker slots
     storePerLevel: 0,
     buildCost: 0,
-    description: "Home of the legion. Upgrade to house more dwellers.",
+    description: "Heart of the deep — where off-duty gladiators sleep, eat, and cope. Upgrade to fit a bigger legion.",
     unique: true,
   },
   mine: {
@@ -104,7 +116,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     capacityPerLevel: 2,
     storePerLevel: 240,
     buildCost: 120,
-    description: "Labor dwellers dig gold from the deep veins.",
+    description: "Labor-hands chip sestertii from the deep veins. Some still glow with pre-Rug value.",
   },
   granary: {
     type: "granary",
@@ -115,7 +127,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     capacityPerLevel: 2,
     storePerLevel: 160,
     buildCost: 200,
-    description: "Hunters stock provisions. A hungry legion mines slower.",
+    description: "Hunters stock grain & hopium. A fed legion mines hard; a starving one posts through it at half-speed.",
   },
   forge: {
     type: "forge",
@@ -126,7 +138,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     capacityPerLevel: 2,
     storePerLevel: 0,
     buildCost: 450,
-    description: "War dwellers forge arms — passive might for raids.",
+    description: "War-hands beat scrap into arms — raw might, the number that decides if a raid comes home rich or in a bag.",
   },
   warroom: {
     type: "warroom",
@@ -137,7 +149,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     capacityPerLevel: 0,
     storePerLevel: 0,
     buildCost: 300,
-    description: "Plan raids on the wastes beyond the mountain.",
+    description: "Plan raids on the Wastes — a dusty map, red string, and one guy insisting the top is in.",
     unique: true,
   },
   warchest: {
@@ -150,7 +162,7 @@ export const ROOMS: Record<RoomType, RoomDef> = {
     storePerLevel: 0,
     buildCost: 0,
     description:
-      "The on-chain vault. Fund it with any-chain assets — Universal Accounts settle USDT on Arbitrum and hire a Free Company.",
+      "The one chamber that still touches the old Chains. The Universal Account reaches any Chain — no bridge — and lands USDT on Arbitrum to hire a Free Company.",
     unique: true,
   },
 };
@@ -166,7 +178,7 @@ export const RAIDS: RaidMission[] = [
     durationSec: 20,
     minMight: 6,
     goldReward: 90,
-    description: "Scavenge the village edge for coin.",
+    description: "Scavenge the village edge for loose coin. Even recruits GMI here.",
   },
   {
     id: "trade_road",
@@ -175,7 +187,7 @@ export const RAIDS: RaidMission[] = [
     durationSec: 45,
     minMight: 45,
     goldReward: 380,
-    description: "Light caravan, heavy coin.",
+    description: "Light caravan down the old trade road, carrying heavy bags. Hit it.",
   },
   {
     id: "fort",
@@ -184,7 +196,7 @@ export const RAIDS: RaidMission[] = [
     durationSec: 90,
     minMight: 160,
     goldReward: 1500,
-    description: "Crack the walls, claim the keep.",
+    description: "Crack a warlord's walls, empty his cold storage. Needs real might.",
   },
   {
     id: "capital",
@@ -193,7 +205,7 @@ export const RAIDS: RaidMission[] = [
     durationSec: 180,
     minMight: 550,
     goldReward: 6200,
-    description: "All-in on the prize city.",
+    description: "All-in on a whale's prize city. This is the send — diamond hands only.",
   },
 ];
 
@@ -229,6 +241,8 @@ export function randomName(): string {
 // BASE_URL keeps paths correct under the GitHub Pages /idle-legion/ prefix.
 const B = import.meta.env.BASE_URL;
 
+export const KEKIUS_MODEL = `${B}art/kekius-boss.glb`;
+
 export const IMG = {
   hero: `${B}art/portrait-champion.jpg`,
   laurel: `${B}art/emblem-laurel.jpg`,
@@ -249,6 +263,7 @@ export const TIER_PORTRAIT: Record<Tier, string> = {
 };
 
 export const ROOM_ART: Record<RoomType, string> = {
+  quarters: `${B}art/boss-kekius.jpg`,
   hall: `${B}art/room-hall.jpg`,
   mine: `${B}art/room-mine.jpg`,
   granary: `${B}art/room-granary.jpg`,
@@ -305,7 +320,7 @@ export const GEAR_BY_ID: Record<string, GearDef> = Object.fromEntries(
 export const BOSSES: BossDef[] = [
   { id: "caged", name: "The Caged Beast", img: `${B}art/boss-caged.jpg`, baseHp: 600, reward: 800 },
   { id: "chariot", name: "Rival Dynasty Charioteer", img: `${B}art/boss-chariot.jpg`, baseHp: 2600, reward: 3400 },
-  { id: "kekius", name: "Kekius the Tyrant", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000 },
+  { id: "kekius", name: "Kekius the Tyrant — the dark timeline", img: `${B}art/boss-kekius.jpg`, baseHp: 9000, reward: 14000 },
 ];
 
 export const FIGHT_COOLDOWN_MS = 6000;

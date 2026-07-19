@@ -55,6 +55,7 @@ export interface Dweller {
 
 /** Room types dug into the mountain. */
 export type RoomType =
+  | "quarters" // Master's Quarters — home of the boss (3D showcase)
   | "hall" // Great Hall — houses idle dwellers, grows population
   | "mine" // Gold Mine — produces gold (labor)
   | "granary" // Granary — produces provisions (hunt)

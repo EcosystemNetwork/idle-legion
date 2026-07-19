@@ -66,6 +66,7 @@ export function createInitialState(now = Date.now()): GameState {
     makeDweller("recruit"),
     makeDweller("spearman"),
   ];
+  const quarters = makeRoom("quarters");
   const hall = makeRoom("hall");
   const mine = makeRoom("mine");
   const warchest = makeRoom("warchest");
@@ -74,10 +75,16 @@ export function createInitialState(now = Date.now()): GameState {
   dwellers[0].roomId = mine.id;
   dwellers[1].roomId = mine.id;
 
+  // Everyone starts with a boss gladiator — the Master — living in his Quarters.
+  const master = makeDweller("champion");
+  master.name = "Kekius Maximus";
+  master.roomId = quarters.id;
+  dwellers.push(master);
+
   return {
     gold: 80,
     provisions: 120,
-    rooms: [hall, mine, warchest],
+    rooms: [quarters, hall, mine, warchest],
     dwellers,
     market: rollMarket(),
     gear: [],
@@ -603,9 +610,9 @@ export function collectAll(state: GameState): GameState {
 }
 
 const INCIDENT_LABELS: Record<IncidentKind, string> = {
-  raiders: "Raiders broke in!",
-  cavein: "Cave-in!",
-  vermin: "Cave vermin infestation!",
+  raiders: "Paper-hand raiders broke in!",
+  cavein: "Cave-in! (network congestion)",
+  vermin: "MEV-rats infesting the deep!",
 };
 
 /** Rush a room: instantly fill its storage, but risk an incident. */
