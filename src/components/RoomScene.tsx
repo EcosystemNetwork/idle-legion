@@ -28,7 +28,8 @@ export function RoomScene({
 }
 
 // A single animated 3D frog dweller standing in a room. `anim` picks a clip
-// from the consolidated GLB (e.g. "Boxing_Practice", "Casual_Walk", "Attack").
+// from the consolidated GLB. Real clips: Idle, Walk, Run, Attack, ComboAttack,
+// Spin, Taunt, Dance, Arise, Dead.
 // One <model-viewer> per frog is GPU-heavy — use for a few featured dwellers,
 // not a whole crowd (use FrogChip 2D for the rest).
 export function RoomFrog({

@@ -138,6 +138,7 @@ import {
 import { operatorId } from "./lib/insforge";
 import {
   ARENA_ONLINE,
+  claimWorldBossRewards,
   fetchWorldBoss,
   strikeWorldBoss,
   syncLadder,
@@ -161,6 +162,16 @@ type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
 type Wallet = ReturnType<typeof useWallet>;
+
+// Real clip names in kekius-boss.glb: Idle, Spin, Taunt, Dance, Arise, Attack,
+// Walk, Dead, Run, ComboAttack. Pick a work-flavored loop per room.
+const FROG_WORK_ANIM: Record<string, string> = {
+  mine: "Attack",
+  forge: "ComboAttack",
+  granary: "Walk",
+  infirmary: "Idle",
+  warroom: "Taunt",
+};
 
 const RESOURCE_IMG: Record<string, string> = {
   gold: IMG.gold,
@@ -1476,7 +1487,7 @@ function Chamber({
         <div className="ch-stage">
           {workers.length > 0 && (
             <div className="ch-worker">
-              <RoomFrog anim="Boxing_Practice" size={130} />
+              <RoomFrog anim={FROG_WORK_ANIM[room.type] ?? "Attack"} size={130} />
             </div>
           )}
           <span className="ch-mood" aria-hidden>
@@ -2528,24 +2539,48 @@ function WorldBossView({ game }: { game: Game }) {
   const hpFracB = dispMax > 0 ? Math.max(0, dispHp) / dispMax : 0;
   const daysLeft = Math.max(0, (dispEndsAt - now) / 86_400_000);
 
-  const onHit = () => {
-    // Local engine handles the economy (stamina/XP/local rewards + cooldown).
-    const hit = game.hitWorldBoss();
-    if (!hit) { sfx.error(); return; }
+  const pending = online ? srv!.pendingReward : null;
+  const hasPending = pending != null && (pending.gold > 0 || pending.legion > 0 || pending.lunchboxes > 0);
+
+  const onClaim = () => {
+    void claimWorldBossRewards().then((r) => {
+      if (!r || !r.reward) return;
+      const { gold, legion, lunchboxes } = r.reward;
+      if (gold || legion || lunchboxes) {
+        actions.grantArenaReward({ gold, legion, lunchboxes });
+        setFlash(`🏆 Claimed 🪙 ${formatNum(gold)}${legion ? ` + 💠 ${formatNum(legion)}` : ""}${lunchboxes ? ` + ${lunchboxes} 🎁` : ""}`);
+        sfx.legendary?.();
+      }
+      void fetchWorldBoss(legionName()).then((s) => { if (s) setSrv(s); });
+    });
+  };
+
+  const flashHit = (damage: number, killed: boolean) => {
     const c = centerOf(document.querySelector(".wb-stage"));
-    shake(hit.killed ? 16 : 6);
-    burst(c.x, c.y, { color: hit.killed ? "#ff7a3d" : "#ffd76b", count: hit.killed ? 40 : 16, kind: "spark", power: hit.killed ? 9 : 5 });
-    floatText(c.x, c.y - 10, `-${formatNum(hit.damage)}`, { color: "#ffd76b", crit: hit.killed });
-    setFlash(`Struck for ${formatNum(hit.damage)}!`);
-    if (hit.killed) sfx.boom(); else sfx.hit();
-    // In LIVE mode, the same damage lands on the real shared boss.
-    if (ARENA_ONLINE) {
-      void strikeWorldBoss(legionName(), hit.damage).then((r) => {
+    shake(killed ? 16 : 6);
+    burst(c.x, c.y, { color: killed ? "#ff7a3d" : "#ffd76b", count: killed ? 40 : 16, kind: "spark", power: killed ? 9 : 5 });
+    floatText(c.x, c.y - 10, `-${formatNum(damage)}`, { color: "#ffd76b", crit: killed });
+    setFlash(`Struck for ${formatNum(damage)}!`);
+    if (killed) sfx.boom(); else sfx.hit();
+  };
+
+  const onHit = () => {
+    if (online) {
+      // LIVE: pay NOTHING locally — server owns the boss + the trustless payout.
+      const damage = game.strikeArena(bossClass);
+      if (damage == null) { sfx.error(); return; }
+      flashHit(damage, false);
+      void strikeWorldBoss(legionName(), damage).then((r) => {
         if (!r) return;
         setSrv(r);
-        if (r.resolved) setFlash(`💥 The realm felled the boss! You placed #${r.resolved.rank} of ${r.resolved.field}.`);
+        if (r.resolved) setFlash(`💥 The realm felled the boss! You placed #${r.resolved.rank} of ${r.resolved.field} — claim your reward below.`);
       });
+      return;
     }
+    // OFFLINE: local sim boss handles the economy + reward on your killing blow.
+    const hit = game.hitWorldBoss();
+    if (!hit) { sfx.error(); return; }
+    flashHit(hit.damage, hit.killed);
   };
 
   return (
@@ -2555,7 +2590,18 @@ function WorldBossView({ game }: { game: Game }) {
         <div className="rank-chip">🏆 Rank #{rank} / {board.length} · tier {dispTier}</div>
       </div>
 
-      {wb.lastReward && (
+      {online && hasPending && (
+        <div className="banner daily wb-reward" role="status">
+          <span className="daily-icon">🏆</span>
+          <strong>Server-verified reward ready</strong>
+          <span className="muted small">
+            From {pending!.cycles} closed cycle{pending!.cycles > 1 ? "s" : ""} · 🪙 {formatNum(pending!.gold)}{pending!.legion ? ` + 💠 ${formatNum(pending!.legion)}` : ""}{pending!.lunchboxes ? ` + ${pending!.lunchboxes} 🎁` : ""}
+          </span>
+          <button type="button" className="btn" onClick={onClaim}>Claim</button>
+        </div>
+      )}
+
+      {!online && wb.lastReward && (
         <div className="banner daily wb-reward" role="status">
           <span className="daily-icon">🏆</span>
           <strong>{wb.lastReward.bossName} down!</strong>
