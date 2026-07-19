@@ -1513,3 +1513,154 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .rr-line.wound .rr-txt { color: #ff9a8a; }
 .rr-line.fight .rr-txt { color: #c9bfe0; }
 .rr-line.flavor .rr-txt { color: var(--muted); }
+
+/* ---------- Scrying Mirror prompt + Operator board ---------- */
+.banner.mirror-prompt {
+  background: linear-gradient(180deg, rgba(176, 114, 255, 0.16), rgba(30, 16, 48, 0.6));
+  border: 1px solid rgba(176, 114, 255, 0.45);
+}
+.op-tab.active { color: #c9a3ff; }
+.op-tab { position: relative; }
+
+.mirror-modal .mirror-orb, .jackpot-modal { text-align: center; }
+.mirror-orb {
+  font-size: 72px; line-height: 1; text-align: center; margin: 4px 0 10px;
+  filter: drop-shadow(0 0 22px rgba(176, 114, 255, 0.8));
+  animation: orbFloat 3s ease-in-out infinite;
+}
+.mirror-orb.dim { filter: grayscale(0.7) drop-shadow(0 0 10px rgba(120, 120, 140, 0.5)); }
+@keyframes orbFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+
+.panel.operator { display: flex; flex-direction: column; gap: 14px; }
+.op-hero {
+  padding: 18px 20px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(176, 114, 255, 0.22), rgba(20, 12, 34, 0.7));
+  border: 1px solid rgba(176, 114, 255, 0.4);
+}
+.op-hero h2 { margin: 0 0 6px; font-family: var(--font-head); color: #c9a3ff; }
+.op-hero p { margin: 0; }
+.op-flash {
+  padding: 10px 14px; border-radius: 10px; font-weight: 700; font-size: 13px;
+  background: rgba(176, 114, 255, 0.14); border: 1px solid rgba(176, 114, 255, 0.4);
+}
+.op-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.op-mission {
+  display: flex; flex-direction: column; gap: 8px; padding: 14px;
+  border-radius: 12px; background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.1); position: relative; overflow: hidden;
+}
+.op-mission.vision { border-color: rgba(176, 114, 255, 0.5); }
+.op-mission.cipher { border-color: rgba(74, 168, 255, 0.45); }
+.op-mission.done { opacity: 0.62; }
+.op-kind { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: var(--muted); }
+.op-mission.vision .op-kind { color: #c9a3ff; }
+.op-mission.cipher .op-kind { color: #7cc0ff; }
+.op-mission h3 { margin: 0; font-size: 15px; font-family: var(--font-head); }
+.op-brief { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; flex: 1; }
+.op-reward { font-weight: 700; }
+.op-answer { display: flex; gap: 6px; }
+.op-answer input {
+  flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; font-size: 13px;
+  background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.16); color: var(--text);
+}
+.op-answer input:focus { outline: none; border-color: #7cc0ff; }
+.op-done { font-weight: 800; color: var(--green); font-size: 13px; }
+
+/* ============================================================
+   DEEP ECONOMY — summoning · DEX/bank · land · world boss · duels
+   ============================================================ */
+
+.chip-stat.legion-tok .ci { background: rgba(120, 180, 255, 0.18); }
+.chip-stat.legion-tok b { color: #8fb8ff; }
+
+/* --- Summoning Portal --- */
+.summon-panel { margin: 10px 0; padding: 12px; border-radius: 14px; background: linear-gradient(180deg, rgba(120,90,200,0.14), rgba(20,14,32,0.4)); border: 1px solid rgba(176,114,255,0.35); }
+.summon-panel.locked { opacity: 0.9; }
+.summon-slots { display: flex; align-items: stretch; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+.summon-slot { flex: 1; min-width: 150px; display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px; background: rgba(0,0,0,0.3); border: 1px dashed rgba(176,114,255,0.4); min-height: 62px; }
+.summon-slot.filled { border-style: solid; }
+.summon-slot img { width: 46px; height: 46px; border-radius: 8px; object-fit: cover; }
+.ss-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-info b { font-size: 13px; }
+.ss-empty { color: var(--muted); font-size: 13px; margin: auto; }
+.summon-x { align-self: center; color: var(--purple); font-weight: 900; }
+.summon-go { align-self: center; }
+.summon-pool { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.summon-mini { position: relative; width: 50px; height: 50px; border-radius: 8px; overflow: hidden; border: 2px solid var(--rar, #555); background: #000; cursor: pointer; padding: 0; }
+.summon-mini img { width: 100%; height: 100%; object-fit: cover; }
+.summon-mini.on { box-shadow: 0 0 0 2px #fff, 0 0 12px var(--rar); }
+.summon-mini.tired { filter: grayscale(0.7) brightness(0.6); }
+.summon-mini .sm-gen { position: absolute; top: 1px; left: 2px; font-size: 9px; font-weight: 900; color: #fff; text-shadow: 0 0 3px #000; }
+.summon-mini .sm-left { position: absolute; bottom: 1px; right: 2px; font-size: 10px; font-weight: 900; color: #ffd76b; text-shadow: 0 0 3px #000; }
+
+/* --- World Boss --- */
+.wb-reward { border-color: rgba(255,194,51,0.5); }
+.wb-stage { position: relative; height: 220px; border-radius: 16px; overflow: hidden; background-size: cover; background-position: center; margin-bottom: 12px; display: flex; align-items: flex-end; }
+.boss-hpbar.wb i { background: linear-gradient(90deg, #b072ff, #ff5a48); }
+.wb-cols { display: grid; grid-template-columns: 1fr 340px; gap: 14px; }
+.wb-board { padding: 10px; border-radius: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.06); max-height: 340px; overflow-y: auto; }
+.wb-row { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 13px; }
+.wb-row.you { background: rgba(255,194,51,0.12); border-radius: 8px; }
+.wb-rank { color: var(--muted); font-variant-numeric: tabular-nums; }
+.wb-dmg { color: var(--amber); font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-width: 800px) { .wb-cols { grid-template-columns: 1fr; } }
+
+/* --- Duels --- */
+.pvp-stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.pvp-stat { flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; padding: 8px; border-radius: 10px; background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.06); }
+.pvp-stat b { font-family: var(--font-head); font-size: 18px; color: var(--gold); }
+.pvp-stat span { font-size: 11px; color: var(--muted); }
+.duel-result strong { color: inherit; }
+.duel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin: 10px 0; }
+.duel-card { padding: 12px; border-radius: 12px; background: var(--panel); border: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 8px; }
+.dc-head { display: flex; justify-content: space-between; align-items: center; }
+.dc-name { font-family: var(--font-head); font-weight: 700; }
+.dc-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+
+/* --- Exchange --- */
+.xc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 800px) { .xc-cols { grid-template-columns: 1fr; } }
+.xc-card { padding: 14px; border-radius: 14px; background: var(--panel); border: 1px solid rgba(255,255,255,0.08); }
+.swap-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.swap-row input { flex: 1; min-width: 90px; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.35); color: var(--text); }
+.swap-arrow { font-size: 13px; color: var(--amber); white-space: nowrap; }
+.bank-stats { display: flex; gap: 10px; margin: 8px 0; }
+.bank-stats > div { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 8px; border-radius: 10px; background: rgba(0,0,0,0.28); }
+.bank-stats b { font-family: var(--font-head); color: #8fb8ff; }
+.bank-stats span { font-size: 11px; color: var(--muted); }
+
+/* --- Realm / Land --- */
+.realm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 12px 0; }
+.parcel { padding: 12px; border-radius: 12px; background: var(--panel); border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; gap: 6px; }
+.parcel.empty { align-items: center; justify-content: center; border-style: dashed; opacity: 0.6; min-height: 110px; }
+.parcel-plus { font-size: 28px; color: var(--muted); }
+.parcel-top { display: flex; justify-content: space-between; align-items: center; }
+.parcel-ic { font-size: 24px; }
+.parcel-lvl { font-size: 11px; color: var(--gold); font-weight: 700; }
+.parcel-name { font-family: var(--font-head); font-weight: 700; font-size: 14px; }
+.parcel.k-legion { border-color: rgba(120,180,255,0.4); }
+.parcel.k-might { border-color: rgba(255,90,72,0.4); }
+.parcel.k-gold { border-color: rgba(255,194,51,0.35); }
+.claim-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px; border-radius: 12px; background: rgba(0,0,0,0.28); }
+.claim-kinds { display: flex; gap: 6px; flex-wrap: wrap; }
+.claim-kinds .chip-btn.on { background: rgba(255,194,51,0.18); border-color: var(--gold); color: var(--gold); }
+
+/* ================= ROOM SCENE (FS "enter the room" interior + dwellers) ================= */
+.room-scene {
+  position: relative; border-radius: 16px; overflow: hidden;
+  border: 3px solid #000; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+  aspect-ratio: 20 / 9; min-height: 280px; background: #0d0a16;
+}
+.rs-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.rs-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(8, 6, 14, 0.12) 0%, transparent 28%, rgba(8, 6, 14, 0.5) 100%); }
+.rs-title {
+  position: absolute; top: 12px; left: 14px; z-index: 3;
+  font-family: var(--font-head); font-size: 20px; color: #fff; text-shadow: 0 2px 8px #000;
+  background: rgba(8, 6, 14, 0.55); border: 1px solid var(--gold-dim, #a9843a);
+  border-radius: 10px; padding: 4px 12px;
+}
+.rs-floor {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 48%; z-index: 2;
+  display: flex; align-items: flex-end; justify-content: center; gap: 12px; padding: 0 24px 3%;
+}
+.rs-floor model-viewer { --poster-color: transparent; background: transparent; }
