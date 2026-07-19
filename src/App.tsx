@@ -15,6 +15,7 @@ import {
   DESCEND_MIN_GOLD,
   IMG,
   KEKIUS_MODEL,
+  KIT,
   MERCENARY_TIERS,
   MIGHT_PER_LEVEL,
   MILESTONE_EVERY,
@@ -74,6 +75,7 @@ import type { Dweller, GameState, GearSlot, LevelUpEvent, OfflineSummary, Onchai
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
+import { flush, identify, initTelemetry } from "./lib/telemetry";
 
 const GOLD_CHIP = ".chip-stat.gold";
 
@@ -185,6 +187,20 @@ export default function App() {
 
   useUiSounds();
   useTabTitleEarnings(stats.goldPerSec, stats.fed);
+
+  // Boot telemetry once — global click tracking + batched flush to InsForge.
+  useEffect(() => {
+    initTelemetry();
+    return () => void flush(true);
+  }, []);
+
+  // Report the player's identity whenever the wallet session changes.
+  useEffect(() => {
+    identify({
+      email: wallet.session?.email ?? null,
+      walletAddress: wallet.session?.address ?? null,
+    });
+  }, [wallet.session]);
 
   // Toggle the admin panel with the ` (backtick) key.
   useEffect(() => {
@@ -399,10 +415,10 @@ function ResourceBar({
   const goldShown = useCountUp(state.gold);
   return (
     <section className="resources">
-      <Chip cls="gold" icon="🪙" v={formatNum(goldShown)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
+      <Chip cls="gold" img={KIT.res.gold} v={formatNum(goldShown)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
       <Chip
         cls={`prov ${stats.fed ? "" : "warn"}`}
-        icon="🌾"
+        img={KIT.res.provisions}
         v={formatNum(state.provisions)}
         s={`${stats.provisionsPerSec >= 0 ? "+" : ""}${stats.provisionsPerSec.toFixed(2)}/s${stats.fed ? "" : " · STARVING"}`}
       />
@@ -412,7 +428,7 @@ function ResourceBar({
         <Chip cls="renown" icon="🏅" v={`${state.renown}`} s={`+${Math.round(renownBoost(state) * 100)}% output`} />
       )}
       <button className={`chip-stat gift ${state.lunchboxes > 0 ? "hot" : ""}`} onClick={onOpenBox} disabled={state.lunchboxes <= 0}>
-        <span className="ci">🎁</span>
+        <span className="ci"><img className="ci-img" src={KIT.res.lunchbox} alt="" /></span>
         <span className="cv">
           <b>{state.lunchboxes}</b>
           <small>open crate</small>
@@ -441,10 +457,10 @@ function ResourceBar({
   );
 }
 
-function Chip({ cls, icon, v, s }: { cls: string; icon: string; v: string; s: string }) {
+function Chip({ cls, icon, img, v, s }: { cls: string; icon?: string; img?: string; v: string; s: string }) {
   return (
     <div className={`chip-stat ${cls}`}>
-      <span className="ci">{icon}</span>
+      <span className="ci">{img ? <img className="ci-img" src={img} alt="" /> : icon}</span>
       <span className="cv">
         <b>{v}</b>
         <small>{s}</small>

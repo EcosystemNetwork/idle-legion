@@ -1320,3 +1320,36 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .kb-sub { font-size: 11px; color: var(--muted); }
 .subnav { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .subnav-title { font-family: var(--font-head); color: var(--gold); font-size: 18px; }
+
+/* ---------- Admin telemetry dashboard ---------- */
+.adm-token { flex: 1; min-width: 160px; background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 7px; color: #fff;
+  padding: 6px 9px; font-size: 12px; font-family: ui-monospace, monospace; }
+.adm-token:focus { outline: none; border-color: var(--gold); }
+.adm-auto { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #9a90ad; }
+.adm-h5 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: #8a819c; margin: 12px 0 6px; font-weight: 800; }
+.adm-note.warn { color: #ff9a8a; }
+.adm-dim { color: #6f6684; }
+
+.adm-bars { display: flex; flex-direction: column; gap: 4px; }
+.adm-bar-row { display: grid; grid-template-columns: 1fr 90px 34px; align-items: center; gap: 8px; font-size: 12px; }
+.adm-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-bar-track { height: 8px; background: rgba(255, 255, 255, 0.07); border-radius: 5px; overflow: hidden; }
+.adm-bar-track i { display: block; height: 100%; background: linear-gradient(90deg, var(--gold), #ff8a3d); border-radius: 5px; }
+.adm-bar-n { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--gold); }
+
+.adm-stream { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 6px; background: rgba(0, 0, 0, 0.25); }
+.adm-stream-row { display: grid; grid-template-columns: 58px 1fr auto auto; gap: 8px; align-items: center;
+  font-size: 11px; padding: 2px 4px; }
+.adm-ename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-etype { font-size: 9px; font-weight: 800; text-transform: uppercase; text-align: center;
+  padding: 2px 4px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); }
+.adm-etype-click { color: #7fd0ff; }
+.adm-etype-action { color: #9dfab0; }
+.adm-etype-pageview { color: #ffc233; }
+.adm-etype-session_start { color: #ff8a7a; }
+
+/* kit resource icons in the HUD chips */
+.chip-stat .ci-img { width: 27px; height: 27px; object-fit: contain; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); }
