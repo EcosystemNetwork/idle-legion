@@ -23,6 +23,15 @@ import {
   RENOWN_GOLD_DIVISOR,
   RENOWN_PER_BOSS,
   SAVE_SALT,
+  MILESTONE_EVERY,
+  MIGHT_PER_LEVEL,
+  OUTPUT_PER_LEVEL,
+  PASSIVE_XP_PER_SEC,
+  XP_COLLECT,
+  XP_FIGHT,
+  XP_FIGHT_KILL,
+  XP_RAID,
+  xpForLevel,
   randomName,
 } from "./config";
 import type {
@@ -33,6 +42,7 @@ import type {
   GearItem,
   GearSlot,
   IncidentKind,
+  LevelUpEvent,
   MarketOffer,
   Objective,
   ObjectiveKind,
@@ -109,6 +119,7 @@ export function createInitialState(now = Date.now()): GameState {
     renown: 0,
     descents: 0,
     offlineSummary: null,
+    levelUps: [],
     totalRaids: 0,
     totalGoldEarned: 0,
     totalBossWins: 0,
@@ -232,13 +243,18 @@ function gearBonus(state: GameState, d: Dweller): { might: number; output: numbe
 }
 
 export function dwellerOutput(d: Dweller, state: GameState): number {
-  const base = TIERS[d.tier].output * (1 + 0.12 * (d.level - 1));
+  const base = TIERS[d.tier].output * (1 + OUTPUT_PER_LEVEL * (d.level - 1));
   return base + gearBonus(state, d).output;
 }
 
 export function dwellerMight(d: Dweller, state: GameState): number {
-  const base = TIERS[d.tier].might * (1 + 0.1 * (d.level - 1));
+  const base = TIERS[d.tier].might * (1 + MIGHT_PER_LEVEL * (d.level - 1));
   return base + gearBonus(state, d).might;
+}
+
+/** Fraction of the way to the next level (0..1) — drives every XP bar. */
+export function xpProgress(d: Dweller): number {
+  return Math.max(0, Math.min(1, d.xp / xpForLevel(d.level)));
 }
 
 /** Unequipped gear (in the armory, not on any hero). */
@@ -371,6 +387,19 @@ export function tick(state: GameState, now = Date.now()): GameState {
   // Incidents auto-resolve — the legion fights them off.
   if (next.incident && now >= next.incident.endsAt) {
     next.incident = null;
+  }
+
+  // Working dwellers earn XP just for being on the job — every bar creeps,
+  // and the occasional idle level-up keeps the loop alive between clicks.
+  // (Incident-frozen rooms don't pay out.)
+  const workingIds: string[] = [];
+  for (const room of next.rooms) {
+    if (roomCapacity(room) <= 0) continue;
+    if (next.incident?.roomId === room.id) continue;
+    workingIds.push(...room.workers);
+  }
+  if (workingIds.length > 0) {
+    next = applyXp(next, workingIds, PASSIVE_XP_PER_SEC * elapsed);
   }
 
   next.lastTick = now;
@@ -601,19 +630,64 @@ export function autoStaff(state: GameState, roomId: string): GameState {
   return next;
 }
 
-function grantXp(state: GameState, ids: string[], amount: number): Dweller[] {
-  return state.dwellers.map((d) => {
-    if (!ids.includes(d.id)) return d;
+/**
+ * Grant XP to a set of dwellers and surface every level-up as a celebration
+ * event. Crossing a milestone level (every {@link MILESTONE_EVERY}) pays a
+ * lunchbox — the concrete payoff that makes the bar worth watching. Returns the
+ * whole next state (dwellers + queued events + milestone crates), so callers
+ * pipe their state through this instead of hand-patching `dwellers`.
+ */
+export function applyXp(state: GameState, ids: string[], amount: number): GameState {
+  if (amount <= 0 || ids.length === 0) return state;
+  const idSet = new Set(ids);
+  const events: LevelUpEvent[] = [];
+  let bonusBoxes = 0;
+
+  const dwellers = state.dwellers.map((d) => {
+    if (!idSet.has(d.id)) return d;
+    const from = d.level;
     let level = d.level;
     let xp = d.xp + amount;
-    let need = level * 100;
+    let need = xpForLevel(level);
+    let milestone = false;
+    let reward = 0;
     while (xp >= need) {
       xp -= need;
       level += 1;
-      need = level * 100;
+      if (level % MILESTONE_EVERY === 0) {
+        milestone = true;
+        reward += 1;
+      }
+      need = xpForLevel(level);
+    }
+    if (level > from) {
+      events.push({
+        id: uid("lv"),
+        dwellerId: d.id,
+        name: d.name,
+        tier: d.tier,
+        from,
+        to: level,
+        milestone,
+        reward,
+      });
+      bonusBoxes += reward;
     }
     return { ...d, level, xp };
   });
+
+  return {
+    ...state,
+    dwellers,
+    lunchboxes: state.lunchboxes + bonusBoxes,
+    // cap the queue so a big batch can't flood the celebration layer
+    levelUps: [...state.levelUps, ...events].slice(-16),
+  };
+}
+
+/** Clear the pending level-up celebrations once the UI has played them. */
+export function clearLevelUps(state: GameState): GameState {
+  return state.levelUps.length ? { ...state, levelUps: [] } : state;
 }
 
 export function collectRoom(state: GameState, roomId: string): GameState {
@@ -629,12 +703,12 @@ export function collectRoom(state: GameState, roomId: string): GameState {
   } else if (def.produces === "provisions") {
     patch.provisions = state.provisions + amount;
   }
-  return {
+  const collected: GameState = {
     ...state,
     ...patch,
     rooms: state.rooms.map((r) => (r.id === roomId ? { ...r, stored: 0 } : r)),
-    dwellers: grantXp(state, room.workers, 8),
   };
+  return applyXp(collected, room.workers, XP_COLLECT);
 }
 
 export function collectAll(state: GameState): GameState {
@@ -773,15 +847,16 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
   const mission = RAIDS.find((m) => m.id === state.activeRaid!.missionId);
   if (!mission) throw new Error("Unknown mission.");
   const reward = Math.floor(mission.goldReward * (1 + state.mercenaryBoost * 0.5));
-  return {
+  const squad = state.activeRaid.squad;
+  const claimed: GameState = {
     ...state,
     gold: state.gold + reward,
     totalGoldEarned: state.totalGoldEarned + reward,
     totalRaids: state.totalRaids + 1,
     lunchboxes: state.lunchboxes + 1, // raids drop a lunchbox
-    dwellers: grantXp(state, state.activeRaid.squad, 40),
     activeRaid: null,
   };
+  return applyXp(claimed, squad, XP_RAID);
 }
 
 export function raidSquadMight(state: GameState): number {
@@ -981,6 +1056,8 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
   }
 
   s = { ...s, arena, gold: s.gold + goldGain, totalGoldEarned: s.totalGoldEarned + goldGain };
+  // The squad bloods itself in the arena — every swing is XP, a kill is a windfall.
+  s = applyXp(s, squad.map((d) => d.id), killed ? XP_FIGHT_KILL : XP_FIGHT);
   return { state: s, result: { damage: dmg, killed, reward: goldGain, bossName: boss.name } };
 }
 
@@ -1067,6 +1144,7 @@ export function loadState(): GameState {
       ...parsed,
       squad: Array.isArray(parsed.squad) ? parsed.squad : [],
       offlineSummary: null,
+      levelUps: [],
     };
     return applyOffline(merged, Date.now());
   } catch {
@@ -1076,8 +1154,8 @@ export function loadState(): GameState {
 
 export function saveState(state: GameState) {
   try {
-    // Never persist a pending offline report — it's a one-time UI event.
-    const data = JSON.stringify({ ...state, offlineSummary: null });
+    // Never persist one-time UI events (offline report / level-up celebrations).
+    const data = JSON.stringify({ ...state, offlineSummary: null, levelUps: [] });
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ sig: signSave(data), data }));
   } catch {
     // storage full / unavailable — ignore

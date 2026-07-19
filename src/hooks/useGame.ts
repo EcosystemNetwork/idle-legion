@@ -6,6 +6,7 @@ import {
   buildRoom,
   claimObjective,
   claimRaid,
+  clearLevelUps,
   clearOfflineSummary,
   clearSquad,
   collectAll,
@@ -125,11 +126,14 @@ export function useGame() {
       clearSquad: () => wrap(clearSquad),
       descend: () => wrap(descend),
       clearOffline: () => wrap(clearOfflineSummary),
+      clearLevelUps: () => wrap(clearLevelUps),
       grantGladiator: (tier: Tier) => wrap((s) => grantGladiator(s, tier)),
       grantGear: (defId: string) => wrap((s) => grantGearItem(s, defId)),
       sellHero: (id: string) => wrap((s) => sellHero(s, id)),
       sellGear: (gearItemId: string) => wrap((s) => sellGearItem(s, gearItemId)),
       clearError: () => setError(null),
+      // Dev/admin escape hatch — shallow-merge an arbitrary state patch.
+      devPatch: (patch: Partial<GameState>) => wrap((s) => ({ ...s, ...patch })),
       reset: () => {
         localStorage.removeItem(STORAGE_KEY);
         setState(loadState());

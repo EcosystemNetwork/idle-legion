@@ -159,6 +159,18 @@ export interface MarketOffer {
   price: number;
 }
 
+/** A gladiator crossed one or more levels — the UI turns this into a celebration. */
+export interface LevelUpEvent {
+  id: string; // unique event id (React key)
+  dwellerId: string;
+  name: string;
+  tier: Tier;
+  from: number; // level before
+  to: number; // level after
+  milestone: boolean; // crossed a milestone level (every 5)
+  reward: number; // lunchboxes granted by milestone(s) in this jump
+}
+
 /** Summary of what the legion produced while the tab was closed. */
 export interface OfflineSummary {
   seconds: number; // time away (capped)
@@ -189,6 +201,7 @@ export interface GameState {
   renown: number; // banked prestige currency (survives descents)
   descents: number; // times the legion has abandoned a stronghold to dig deeper
   offlineSummary: OfflineSummary | null; // pending "while you were away" report
+  levelUps: LevelUpEvent[]; // pending level-up celebrations for the UI to drain
   totalRaids: number;
   totalGoldEarned: number;
   totalBossWins: number;

@@ -238,6 +238,26 @@ export const STARVING_PENALTY = 0.5;
 /** Aptitude-match production bonus. */
 export const MATCH_BONUS = 0.25;
 
+// ---------- XP & leveling (the dopamine loop) ----------
+/** XP a working dweller earns every second on the job (bars visibly creep). */
+export const PASSIVE_XP_PER_SEC = 0.6;
+/** XP burst when you collect a room the dweller worked. */
+export const XP_COLLECT = 8;
+/** XP each raider earns on a successful raid. */
+export const XP_RAID = 40;
+/** XP the arena squad earns per fight — and the bonus when the boss drops. */
+export const XP_FIGHT = 14;
+export const XP_FIGHT_KILL = 60;
+/** XP needed to go from level L to L+1. */
+export function xpForLevel(level: number): number {
+  return level * 100;
+}
+/** Every Nth level is a milestone — bigger celebration + a lunchbox. */
+export const MILESTONE_EVERY = 5;
+/** Output/might each level adds (surfaced in the hero sheet so it's felt). */
+export const OUTPUT_PER_LEVEL = 0.12;
+export const MIGHT_PER_LEVEL = 0.1;
+
 /** On-chain war chest: fund this much USD → permanent Free Company boost tier. */
 export const MERCENARY_TIERS = [
   { minUsd: 0.1, boost: 0.15, label: "Scout Mercs (+15% output)" },
@@ -264,6 +284,42 @@ export function randomName(): string {
 const B = import.meta.env.BASE_URL;
 
 export const KEKIUS_MODEL = `${B}art/kekius-boss.glb`;
+
+// Cohesive art kit (sliced from Rex's sheets) — the Gladiator Frog Empire look.
+export const KIT = {
+  mapIso: `${B}art/kit/map-iso.png`,
+  wheel: `${B}art/kit/map-wheel.png`,
+  res: {
+    gold: `${B}art/kit/res-gold.png`,
+    provisions: `${B}art/kit/res-provisions.png`,
+    stamina: `${B}art/kit/res-stamina.png`,
+    crystal: `${B}art/kit/res-crystal.png`,
+    lunchbox: `${B}art/kit/res-lunchbox.png`,
+  },
+  bld: {
+    warhall: `${B}art/kit/bld-warhall.png`,
+    colosseum: `${B}art/kit/bld-colosseum.png`,
+    hunt: `${B}art/kit/bld-hunt.png`,
+    treasury: `${B}art/kit/bld-treasury.png`,
+    mine: `${B}art/kit/bld-mine.png`,
+    throne: `${B}art/kit/bld-throne.png`,
+    forge: `${B}art/kit/bld-forge.png`,
+    granary: `${B}art/kit/bld-granary.png`,
+    garden: `${B}art/kit/bld-garden.png`,
+    alchemy: `${B}art/kit/bld-alchemy.png`,
+  },
+  prof: {
+    mining: `${B}art/kit/prof-mining.png`,
+    hunting: `${B}art/kit/prof-hunting.png`,
+    war: `${B}art/kit/prof-war.png`,
+    foraging: `${B}art/kit/prof-foraging.png`,
+  },
+  tex: {
+    floor: `${B}art/kit/tex-floor.png`,
+    wall: `${B}art/kit/tex-wall.png`,
+    wood: `${B}art/kit/tex-wood.png`,
+  },
+};
 
 export const IMG = {
   hero: `${B}art/portrait-champion.jpg`,

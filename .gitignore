@@ -35,3 +35,18 @@ public/Lit.jpg
 # from these via `node scripts/build-boss.mjs`.
 art-src/
 public/art/Meshy_AI_*/
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf

@@ -3,6 +3,7 @@
 // Self-initializing singleton — import and call; it owns its own DOM overlays,
 // so it needs (almost) no wiring into React components.
 import "./fx.css";
+import "./ambience.css";
 
 const PREFERS_REDUCED =
   typeof window !== "undefined" &&

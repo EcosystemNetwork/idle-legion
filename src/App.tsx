@@ -1,25 +1,34 @@
-import { createElement, lazy, Suspense, useEffect, useState } from "react";
+import { createElement, lazy, Suspense, useEffect, useRef, useState } from "react";
 import "@google/model-viewer";
 
 // Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
 // initial bundle and only loads when a player opens the Arena on a 3D boss.
 const BossStage = lazy(() => import("./components/BossStage"));
+// Dev/admin "see everything" overlay — code-split so it never ships in the main view.
+const AdminPanel = lazy(() => import("./components/AdminPanel"));
+import KingdomMap from "./components/KingdomMap";
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
   BUILDABLE,
   CRATE_IMG,
+  DESCEND_MIN_GOLD,
   IMG,
   KEKIUS_MODEL,
   MERCENARY_TIERS,
+  MIGHT_PER_LEVEL,
+  MILESTONE_EVERY,
   ONCHAIN_LISTINGS,
+  OUTPUT_PER_LEVEL,
   RAIDS,
   RAID_ART,
   RARITY_META,
+  RENOWN_BOOST_PER,
   ROOMS,
   ROOM_ART,
   TIERS,
   TIER_PORTRAIT,
+  xpForLevel,
 } from "./game/config";
 import {
   ASSET_CATALOG,
@@ -31,6 +40,7 @@ import {
   arenaSquad,
   arenaSquadPower,
   buildCost,
+  canDescend,
   currentBoss,
   dwellerById,
   dwellerMight,
@@ -39,23 +49,28 @@ import {
   gearDefOf,
   gearSellValue,
   heroSellValue,
+  idleDwellers,
   inventoryGear,
   isOnRaid,
   marketRerollCost,
   objectiveLabel,
   objectiveProgress,
+  pendingRenown,
   raidSquadMight,
   recruitCost,
+  renownBoost,
   roomCapacity,
   roomRate,
   roomStoreCap,
   maxPopulation,
+  squadPower,
   upgradeCost,
+  xpProgress,
   type Pull,
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { Dweller, GameState, GearSlot, OnchainListing, Room, Tier } from "./game/types";
+import type { Dweller, GameState, GearSlot, LevelUpEvent, OfflineSummary, OnchainListing, Room, Tier } from "./game/types";
 import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { MuteButton, useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
@@ -66,7 +81,7 @@ function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "stronghold" | "legion" | "arena" | "raids" | "market" | "codex";
+type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "market" | "codex";
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
@@ -84,6 +99,20 @@ const RARITY: Record<Tier, { name: string; color: string; stars: number }> = {
 };
 function stars(n: number) {
   return "★".repeat(n) + "☆".repeat(5 - n);
+}
+
+// A slim XP bar with the fraction-to-next-level. `milestone` glows gold when the
+// next level is a milestone, so the payoff is telegraphed before it lands.
+function XpBar({ d, showText = false }: { d: Dweller; showText?: boolean }) {
+  const frac = xpProgress(d);
+  const need = xpForLevel(d.level);
+  const nextIsMilestone = (d.level + 1) % MILESTONE_EVERY === 0;
+  return (
+    <div className={`xp-bar ${nextIsMilestone ? "milestone" : ""}`} title={`${Math.floor(d.xp)} / ${need} XP → Lv ${d.level + 1}`}>
+      <i style={{ width: `${frac * 100}%` }} />
+      {showText && <b>{Math.floor(d.xp)} / {need} XP</b>}
+    </div>
+  );
 }
 
 // ---------------- character figure (draggable) ----------------
@@ -147,14 +176,27 @@ export default function App() {
   const game = useGame();
   const { state, stats, error: gameError, now, actions } = game;
   const wallet = useWallet();
-  const [tab, setTab] = useState<Tab>("stronghold");
+  const [tab, setTab] = useState<Tab>("kingdom");
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
   const [heroId, setHeroId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Pull | null>(null);
   const [email, setEmail] = useState("");
+  const [admin, setAdmin] = useState(false);
 
   useUiSounds();
   useTabTitleEarnings(stats.goldPerSec, stats.fed);
+
+  // Toggle the admin panel with the ` (backtick) key.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "`" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        setAdmin((a) => !a);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const assignRoom = assignRoomId ? state.rooms.find((r) => r.id === assignRoomId) : null;
   const hero = heroId ? dwellerById(state, heroId) : null;
@@ -209,7 +251,8 @@ export default function App() {
       <nav className="tabs">
         {(
           [
-            ["stronghold", "🏰 Stronghold"],
+            ["kingdom", "🏰 Kingdom"],
+            ["stronghold", "⛏️ Stronghold"],
             ["legion", "🛡️ Legion"],
             ["arena", "⚔️ Arena"],
             ["raids", "🗺️ Raids"],
@@ -239,6 +282,8 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {tab === "kingdom" && <KingdomMap onEnter={(id) => setTab(id as Tab)} />}
 
       {tab === "stronghold" && (
         <StrongholdView
@@ -299,6 +344,12 @@ export default function App() {
         />
       )}
 
+      {state.offlineSummary && (
+        <OfflineModal summary={state.offlineSummary} onClose={() => actions.clearOffline()} />
+      )}
+
+      <LevelUpLayer events={state.levelUps} onDrain={() => actions.clearLevelUps()} />
+
       <footer className="foot">
         <p>
           UXMaxx · Universal Accounts track · original Idle Legion build · EIP-7702 chain-abstracted
@@ -310,6 +361,21 @@ export default function App() {
       </footer>
 
       <MuteButton />
+
+      <button
+        type="button"
+        className="admin-fab"
+        title="Admin panel — see everything ( ` )"
+        onClick={() => setAdmin(true)}
+      >
+        🛠
+      </button>
+
+      {admin && (
+        <Suspense fallback={null}>
+          <AdminPanel game={game} wallet={wallet} onClose={() => setAdmin(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -342,6 +408,9 @@ function ResourceBar({
       />
       <Chip cls="pop" icon="🛡️" v={`${stats.population}/${maxPopulation(state)}`} s={`${stats.idleCount} idle`} />
       <Chip cls="might" icon="⚔️" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
+      {state.renown > 0 && (
+        <Chip cls="renown" icon="🏅" v={`${state.renown}`} s={`+${Math.round(renownBoost(state) * 100)}% output`} />
+      )}
       <button className={`chip-stat gift ${state.lunchboxes > 0 ? "hot" : ""}`} onClick={onOpenBox} disabled={state.lunchboxes <= 0}>
         <span className="ci">🎁</span>
         <span className="cv">
@@ -448,8 +517,199 @@ function StrongholdView({
       </div>
       <div className="vault-floor">
         <BuildMenu state={state} actions={actions} />
+        <DescendPanel state={state} actions={actions} />
       </div>
     </section>
+  );
+}
+
+// ---------------- prestige: Descend deeper (Fix #2) ----------------
+
+function DescendPanel({ state, actions }: { state: GameState; actions: Actions }) {
+  const [confirm, setConfirm] = useState(false);
+  const pending = pendingRenown(state);
+  const can = canDescend(state);
+  const boost = Math.round(renownBoost(state) * 100);
+  const nextBoost = Math.round((state.renown + pending) * RENOWN_BOOST_PER * 100);
+  return (
+    <div className="descend-panel">
+      <div className="dp-head">
+        <span className="build-label">⬇ DESCEND DEEPER</span>
+        <span className="muted small">
+          🏅 {state.renown} Renown · +{boost}% output{state.descents > 0 ? ` · descent #${state.descents}` : ""}
+        </span>
+      </div>
+      <p className="muted small">
+        {can ? (
+          <>Abandon this stronghold and dig deeper to bank <strong>+{pending} Renown</strong> — a permanent{" "}
+          <strong>+{nextBoost}%</strong> to every room, forever. Your run resets; Renown and anything bought on-chain stay.</>
+        ) : (
+          <>Earn 🪙 {formatNum(DESCEND_MIN_GOLD)} total gold this run to descend (now {formatNum(state.totalGoldEarned)}).</>
+        )}
+      </p>
+      {!confirm ? (
+        <button type="button" className="btn" disabled={!can} onClick={() => setConfirm(true)}>
+          ⬇ Descend · +{pending} 🏅
+        </button>
+      ) : (
+        <div className="dp-confirm">
+          <span className="muted small">Reset the whole run for +{pending} Renown?</span>
+          <button type="button" className="btn secondary" onClick={() => setConfirm(false)}>Not yet</button>
+          <button
+            type="button"
+            className="btn danger"
+            onClick={() => {
+              actions.descend();
+              setConfirm(false);
+            }}
+          >
+            Confirm descent
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- shared squad picker (Fix #4) ----------------
+
+function SquadPicker({ state, actions }: { state: GameState; actions: Actions }) {
+  const idle = idleDwellers(state);
+  const chosen = new Set(state.squad);
+  const picked = idle.filter((d) => chosen.has(d.id));
+  const sending = picked.length ? picked : idle;
+  const power = Math.floor(squadPower(state, sending));
+  return (
+    <div className="squad-picker">
+      <div className="sp-head">
+        <span>
+          🎖️ Squad — sending <b>{sending.length}</b> · <b>{power} ⚔</b>
+          {picked.length === 0 && idle.length > 0 ? <span className="muted small"> (all idle)</span> : null}
+        </span>
+        <div className="sp-actions">
+          <button type="button" className="chip-btn" disabled={idle.length === 0} onClick={() => actions.selectAllIdle()}>
+            All idle
+          </button>
+          <button type="button" className="chip-btn" disabled={state.squad.length === 0} onClick={() => actions.clearSquad()}>
+            Clear
+          </button>
+        </div>
+      </div>
+      <div className="sp-row">
+        {idle.length === 0 && <span className="muted small">No idle dwellers — recall some from rooms or a raid.</span>}
+        {idle.map((d) => {
+          const on = chosen.has(d.id);
+          return (
+            <button
+              key={d.id}
+              type="button"
+              className={`sp-fig apt-${d.aptitude} ${on ? "on" : ""}`}
+              style={{ ["--rar" as string]: RARITY[d.tier].color }}
+              title={`${d.name} · ${TIERS[d.tier].name} · ${Math.floor(dwellerMight(d, state))}⚔`}
+              onClick={() => actions.toggleSquad(d.id)}
+            >
+              <img src={TIER_PORTRAIT[d.tier]} alt={d.name} loading="lazy" />
+              <span className="sp-m">{Math.floor(dwellerMight(d, state))}</span>
+              {on && <span className="sp-check">✓</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- offline earnings (Fix #3) ----------------
+
+function OfflineModal({ summary, onClose }: { summary: OfflineSummary; onClose: () => void }) {
+  const h = Math.floor(summary.seconds / 3600);
+  const m = Math.floor((summary.seconds % 3600) / 60);
+  const away = h > 0 ? `${h}h ${m}m` : `${Math.max(1, m)}m`;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal offline-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>⛏️ While you were away</h3>
+          <button className="chip-btn" onClick={onClose}>✕</button>
+        </div>
+        <p className="muted small">The deep kept digging for <strong>{away}</strong>. Your legion brought in:</p>
+        <div className="offline-rows">
+          <div className="offline-row"><span>🪙 Sestertii</span><b>+{formatNum(summary.gold)}</b></div>
+          <div className="offline-row">
+            <span>🌾 Provisions</span>
+            <b className={summary.provisions < 0 ? "warn" : ""}>
+              {summary.provisions >= 0 ? "+" : "−"}{formatNum(Math.abs(summary.provisions))}
+            </b>
+          </div>
+          {summary.recruits > 0 && (
+            <div className="offline-row"><span>🪖 Recruits raised</span><b>+{summary.recruits}</b></div>
+          )}
+        </div>
+        <button type="button" className="btn" onClick={onClose}>Back to the deep</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- level-up celebration ----------------
+
+// Drains the engine's level-up queue: fires particles/sound for each fresh
+// event (staggered), stacks toasts, then clears the queue after a quiet beat.
+function LevelUpLayer({ events, onDrain }: { events: LevelUpEvent[]; onDrain: () => void }) {
+  const shown = useRef<Set<string>>(new Set());
+
+  // Play juice for events we haven't celebrated yet.
+  useEffect(() => {
+    const fresh = events.filter((e) => !shown.current.has(e.id));
+    if (fresh.length === 0) return;
+    const cx = window.innerWidth / 2;
+    const cy = Math.min(180, window.innerHeight * 0.22);
+    fresh.forEach((e, i) => {
+      shown.current.add(e.id);
+      window.setTimeout(() => {
+        if (e.milestone) {
+          shake(9);
+          ring(cx, cy, "#ffc233", 26);
+          burst(cx, cy, { color: "#ffe08a", count: 34, kind: "shard", power: 8 });
+          burst(cx, cy, { color: "#9dfab0", count: 18, kind: "spark", power: 6 });
+          floatText(cx, cy - 12, `★ ${e.name} — Lv ${e.to}!`, { color: "#ffd76b", crit: true });
+          sfx.legendary();
+        } else {
+          ring(cx, cy, "#5fe38a", 16);
+          burst(cx, cy, { color: "#9dfab0", count: 14, kind: "spark", power: 5 });
+          floatText(cx, cy - 8, `${e.name} — Lv ${e.to}`, { color: "#9dfab0", big: true });
+          sfx.levelup();
+        }
+      }, i * 240);
+    });
+  }, [events]);
+
+  // Clear the queue (and the shown-set) after the last event has had its moment.
+  useEffect(() => {
+    if (events.length === 0) {
+      shown.current.clear();
+      return;
+    }
+    const t = window.setTimeout(onDrain, events.length * 240 + 2400);
+    return () => window.clearTimeout(t);
+  }, [events, onDrain]);
+
+  if (events.length === 0) return null;
+  return (
+    <div className="levelup-toasts" aria-live="polite">
+      {events.slice(-4).map((e) => (
+        <div key={e.id} className={`lv-toast ${e.milestone ? "milestone" : ""}`}>
+          <img src={TIER_PORTRAIT[e.tier]} alt="" />
+          <div className="lv-body">
+            <b>{e.milestone ? "★ " : ""}{e.name} <span className="muted">leveled up!</span></b>
+            <span>
+              Lv {e.from} → <b>{e.to}</b>
+              {e.reward > 0 ? ` · milestone +${e.reward} 🎁` : ""}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -747,6 +1007,7 @@ function LegionView({
                 </div>
                 <div className="gacha-name">{d.name}</div>
                 <div className="gacha-stars">{stars(r.stars)}</div>
+                <XpBar d={d} />
                 <div className="gacha-foot">
                   {out ? (
                     <span className="badge raid">On raid</span>
@@ -801,7 +1062,7 @@ function Objectives({ state, actions, onOpenBox }: { state: GameState; actions: 
 // ---------------- arena ----------------
 
 function ArenaView({ game }: { game: Game }) {
-  const { state, now, fightBoss } = game;
+  const { state, now, fightBoss, actions } = game;
   const [flash, setFlash] = useState<string | null>(null);
   // Combat → animation triggers for the live 3D boss (see BossStage).
   const [hitToken, setHitToken] = useState(0);
@@ -865,22 +1126,19 @@ function ArenaView({ game }: { game: Game }) {
         </div>
       </div>
 
+      <SquadPicker state={state} actions={actions} />
+
       <div className="arena-controls">
         <div className="squad-info">
           <div className="squad-power">Squad power <b>{power} ⚔</b></div>
-          <div className="squad-figs">
-            {squad.slice(0, 8).map((d) => (
-              <img key={d.id} className="squad-fig" src={TIER_PORTRAIT[d.tier]} alt={d.name} title={`${d.name} · ${Math.floor(dwellerMight(d, state))}⚔`} />
-            ))}
-            {squad.length === 0 && <span className="muted small">No idle heroes — recall some from rooms/raids.</span>}
-          </div>
+          <span className="muted small">Forge arsenal counts toward every fight.</span>
         </div>
         <button type="button" className="btn big" disabled={cd > 0 || squad.length === 0} onClick={onFight}>
           {cd > 0 ? `Regrouping ${Math.ceil(cd / 1000)}s` : "⚔ FIGHT"}
         </button>
       </div>
       <p className="muted small">
-        Idle heroes form your squad. Beat the boss to earn gold + a 🎁 lunchbox and climb the ladder. Equip gear in the Legion tab to hit harder.
+        Pick a squad from your idle heroes (or send all). Beat the boss for gold + a 🎁 lunchbox and climb the ladder. Equip gear in the Legion tab to hit harder.
       </p>
     </section>
   );
@@ -908,10 +1166,12 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
       <div className="panel-head">
         <h2>🗺️ Raids · the Wastes topside</h2>
         <p className="muted small">
-          Idle squad might: <strong>{Math.floor(squadMight)} ⚔</strong> · every raid drops a 🎁 lunchbox
+          Squad might: <strong>{Math.floor(squadMight)} ⚔</strong> (Forge arsenal included) · every raid drops a 🎁 lunchbox
         </p>
       </div>
       {!hasWarRoom && <p className="muted small warn">Dig a 🗺️ War Room in the Stronghold to launch raids.</p>}
+
+      {!raid && <SquadPicker state={state} actions={actions} />}
 
       {raid && mission && (
         <div className="active-raid" style={{ backgroundImage: `url(${RAID_ART[mission.id]})` }}>
@@ -1011,6 +1271,17 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
                 <span className="badge idle">Idle</span>
               )}
             </div>
+          </div>
+        </div>
+
+        <div className="hm-xp">
+          <div className="hm-xp-head">
+            <span>Lv {d.level} → {d.level + 1}{(d.level + 1) % MILESTONE_EVERY === 0 ? " · ★ milestone 🎁" : ""}</span>
+            <span className="muted small">{Math.floor(d.xp)} / {xpForLevel(d.level)} XP</span>
+          </div>
+          <XpBar d={d} />
+          <div className="hm-xp-preview muted small">
+            Each level: <b>+{Math.round(OUTPUT_PER_LEVEL * 100)}%</b> output · <b>+{Math.round(MIGHT_PER_LEVEL * 100)}%</b> might
           </div>
         </div>
 
