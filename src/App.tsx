@@ -1094,7 +1094,7 @@ function OperatorView({ serial, actions, identity }: { serial: number; actions: 
     setBusy(m.code);
     setFlash(null);
     try {
-      const res: CompleteResult = await completeMission(m.code, answers[m.code] ?? "");
+      const res: CompleteResult = await completeMission(m.code, answers[m.code] ?? "", identity);
       if (res.status === "complete" && res.reward) {
         actions.grantBundle({
           gold: res.reward.gold,
