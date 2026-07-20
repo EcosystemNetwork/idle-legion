@@ -1,5 +1,5 @@
-import { createElement, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import "@google/model-viewer";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+
 
 // Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
 // initial bundle and only loads when a player opens the Arena on a 3D boss.
@@ -9,6 +9,7 @@ const GameWorld = lazy(() => import("./components/GameWorld"));
 // Dev/admin "see everything" overlay — code-split so it never ships in the main view.
 const AdminPanel = lazy(() => import("./components/AdminPanel"));
 import KingdomMap from "./components/KingdomMap";
+import Actor from "./components/Actor";
 import { INTERIOR } from "./game/interiors";
 import { RoomFrog } from "./components/RoomScene";
 import {
@@ -267,27 +268,22 @@ function GhostFigure({ onClick }: { onClick: () => void }) {
   );
 }
 
-// The animated 3D boss (Meshy GLB) rendered via <model-viewer>.
+// The animated 3D Master, rendered through the shared-context portal renderer
+// (see three/portals) rather than its own WebGL context.
 function ModelBoss({ src }: { src: string }) {
-  return createElement("model-viewer", {
-    src,
-    poster: ROOM_ART.quarters, // 2D boss art shown until the 3D model loads (or if WebGL is off)
-    alt: "Kekius Maximus — the Master",
-    autoplay: true,
-    "camera-controls": true,
-    "auto-rotate": true,
-    "rotation-per-second": "18deg",
-    "auto-rotate-delay": 0,
-    "interaction-prompt": "none",
-    "disable-zoom": true,
-    "shadow-intensity": "0.9",
-    exposure: "1.15",
-    "camera-orbit": "0deg 88deg 2.7m",
-    "field-of-view": "30deg",
-    loading: "eager",
-    reveal: "auto",
-    style: { width: "100%", height: "100%", background: "transparent" },
-  });
+  return (
+    <Actor
+      src={src}
+      poster={ROOM_ART.quarters} // 2D art until the model lands (or if WebGL is off)
+      title="Kekius Maximus — the Master"
+      anim="Idle"
+      spin={18}
+      fov={30}
+      zoom={1.85}
+      aim={0.55}
+      style={{ width: "100%", height: "100%" }}
+    />
+  );
 }
 
 // ---------------- App ----------------
