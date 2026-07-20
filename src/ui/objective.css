@@ -1,0 +1,205 @@
+/* The Next Objective card. See NextObjective.tsx. */
+
+@import "./tokens.css";
+
+.obj-card {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s-5);
+  padding: var(--s-4) var(--s-5);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line-gold);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(255, 194, 51, 0.14), transparent 62%),
+    linear-gradient(180deg, rgba(31, 23, 48, 0.96), rgba(17, 12, 28, 0.96));
+  box-shadow: var(--e-2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.obj-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s-2); }
+.obj-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+
+.obj-eyebrow {
+  font-size: var(--t-2xs);
+  font-weight: var(--w-black);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.obj-collapse,
+.obj-caret {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--fg-faint);
+  font-size: var(--t-sm);
+  cursor: pointer;
+  line-height: 1;
+}
+.obj-collapse:hover { color: var(--fg); }
+
+.obj-title {
+  margin: 0;
+  font-family: var(--font-head);
+  font-size: var(--t-xl);
+  font-weight: var(--w-bold);
+  line-height: var(--lh-tight);
+  color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+.obj-detail {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  color: var(--fg-muted);
+  max-width: 62ch;
+}
+
+/* --------------------------------------------------------------- progress */
+
+.obj-progress { display: flex; align-items: center; gap: var(--s-3); margin-top: var(--s-1); }
+.obj-track {
+  flex: 1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.obj-track > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #a97c16, var(--accent));
+  transition: width var(--dur-3) var(--ease);
+}
+.obj-progress-text {
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------- reward + action */
+
+.obj-side {
+  flex: none;
+  width: 210px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--s-3);
+  padding-left: var(--s-5);
+  border-left: 1px dashed var(--line);
+}
+.obj-reward { display: flex; flex-direction: column; gap: var(--s-1); text-align: right; }
+.obj-reward-label {
+  font-size: var(--t-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: var(--w-black);
+  color: var(--fg-faint);
+}
+.obj-reward strong {
+  font-family: var(--font-head);
+  font-size: var(--t-md);
+  font-weight: var(--w-bold);
+  color: var(--accent);
+  line-height: var(--lh-snug);
+}
+
+/* ------------------------------------------------------------------ tones */
+
+/* Urgent: something is actively decaying. Red, and it pulses. */
+.obj-card.tone-urgent {
+  border-color: rgba(255, 90, 72, 0.6);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(255, 90, 72, 0.18), transparent 62%),
+    linear-gradient(180deg, rgba(42, 19, 26, 0.96), rgba(20, 10, 16, 0.96));
+  animation: obj-alarm 2.4s var(--ease) infinite;
+}
+.obj-card.tone-urgent .obj-eyebrow { color: #ff9a8a; }
+.obj-card.tone-urgent .obj-reward strong { color: #ff9a8a; }
+@keyframes obj-alarm {
+  0%, 100% { box-shadow: var(--e-2), 0 0 0 0 rgba(255, 90, 72, 0); }
+  50% { box-shadow: var(--e-2), 0 0 22px -6px rgba(255, 90, 72, 0.7); }
+}
+
+/* Reward: free value waiting. Green. */
+.obj-card.tone-reward {
+  border-color: rgba(95, 227, 138, 0.55);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(95, 227, 138, 0.14), transparent 62%),
+    linear-gradient(180deg, rgba(20, 34, 26, 0.96), rgba(11, 20, 16, 0.96));
+}
+.obj-card.tone-reward .obj-eyebrow { color: var(--ok); }
+.obj-card.tone-reward .obj-reward strong { color: var(--ok); }
+
+/* Goal: a longer horizon. Violet, calmer than the gold default. */
+.obj-card.tone-goal {
+  border-color: rgba(176, 114, 255, 0.45);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(176, 114, 255, 0.13), transparent 62%),
+    linear-gradient(180deg, rgba(28, 21, 46, 0.96), rgba(15, 11, 26, 0.96));
+}
+.obj-card.tone-goal .obj-eyebrow { color: var(--accent-2); }
+.obj-card.tone-goal .obj-reward strong { color: #d3b3ff; }
+
+@media (prefers-reduced-motion: reduce) {
+  .obj-card.tone-urgent { animation: none; box-shadow: var(--e-2), var(--glow-danger); }
+}
+
+/* -------------------------------------------------------------- collapsed */
+
+.obj-card.collapsed { align-items: center; padding: var(--s-2) var(--s-4); gap: var(--s-3); }
+.obj-expand {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.obj-mini-title {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-head);
+  font-size: var(--t-md);
+  font-weight: var(--w-bold);
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- mobile */
+
+@media (max-width: 860px) {
+  .obj-card { flex-direction: column; gap: var(--s-3); padding: var(--s-4); }
+  .obj-side {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 0;
+    padding-top: var(--s-3);
+    border-left: 0;
+    border-top: 1px dashed var(--line);
+  }
+  .obj-reward { text-align: left; }
+  .obj-side > .ui-btn { width: auto; flex: none; }
+  .obj-title { font-size: var(--t-lg); }
+  /* Two lines of body copy is the most a 390px card can carry before it starts
+     competing with the world for height. */
+  .obj-detail {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}

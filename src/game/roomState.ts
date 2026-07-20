@@ -14,7 +14,8 @@
 import {
   aptitudeMatches,
   dwellerById,
-  isOnRaid,
+  dwellerMaxHp,
+
   roomCapacity,
   roomPropBonuses,
   roomRate,
@@ -158,7 +159,8 @@ export function deriveRoomVisual(
     .filter((d): d is Dweller => Boolean(d));
   const matched = workers.filter((d) => aptitudeMatches(room, d)).length;
   const downed = workers.filter((d) => d.downed).length;
-  const injured = workers.filter((d) => !d.downed && d.hp < 1).length;
+  // `hp` is absolute, not a fraction — compare against the dweller's own max.
+  const injured = workers.filter((d) => !d.downed && d.hp < dwellerMaxHp(d)).length;
 
   const incident = state.incident?.roomId === room.id ? state.incident : null;
   const incidentMs = incident ? Math.max(0, incident.endsAt - now) : 0;

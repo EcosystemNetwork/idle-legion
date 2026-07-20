@@ -45,9 +45,15 @@ export default function KingdomOverlay({
   /** Hands the position-writer up to GameWorld, which owns the three handle. */
   registerApply: (apply: ((pts: ProjectedBuilding[]) => void) | null) => void;
 }) {
+  const layerRef = useRef<HTMLDivElement | null>(null);
   const nodes = useRef(new Map<string, HTMLDivElement>());
 
   const apply = useCallback((pts: ProjectedBuilding[]) => {
+    const host = layerRef.current;
+    if (!host) return;
+    const w = host.clientWidth;
+    const h = host.clientHeight;
+
     for (const p of pts) {
       const el = nodes.current.get(p.id);
       if (!el) continue;
@@ -58,7 +64,13 @@ export default function KingdomOverlay({
         continue;
       }
       el.style.visibility = "visible";
-      el.style.transform = `translate3d(${p.x}px, ${p.y}px, 0) translate(-50%, -100%) scale(${p.scale})`;
+      // Keep the whole chip inside the canvas. Buildings on the far side of the
+      // ring project near (and past) the edges, and a half-cropped "RAND HALL"
+      // reads as a rendering bug rather than a label.
+      const halfW = el.offsetWidth / 2;
+      const x = Math.max(halfW + 4, Math.min(w - halfW - 4, p.x));
+      const y = Math.max(el.offsetHeight + 4, Math.min(h - 4, p.y));
+      el.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%) scale(${p.scale})`;
       // Nearer buildings must overlap further ones, matching the 3D depth.
       el.style.zIndex = String(1000 - Math.round(p.depth * 10));
       // Fade the far side of the ring so the near markers stay readable.
@@ -75,7 +87,7 @@ export default function KingdomOverlay({
   const items = useMemo(() => BUILDINGS.map((b) => ({ def: b, st: states[b.id] })), [states]);
 
   return (
-    <div className="ko-layer" aria-label="Kingdom buildings">
+    <div className="ko-layer" ref={layerRef} aria-label="Kingdom buildings">
       {items.map(({ def, st }) => {
         const status = st?.status ?? "idle";
         const meta = STATUS_META[status];

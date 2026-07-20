@@ -1,0 +1,166 @@
+/* DOM hotspot markers over the 3D kingdom. See KingdomOverlay.tsx. */
+
+@import "../ui/tokens.css";
+
+.ko-layer {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-world-overlay);
+  /* The layer must not eat camera drags — only the markers themselves take
+     pointer events. */
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ko-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* transform / opacity / z-index are written per frame from the render loop;
+     never set them here or the two will fight. */
+  will-change: transform;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease);
+}
+
+/* ------------------------------------------------------------- the label */
+
+.ko-hit {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(180deg, rgba(30, 22, 48, 0.94), rgba(15, 10, 26, 0.94));
+  box-shadow: var(--e-2);
+  cursor: pointer;
+  text-align: center;
+  /* Backdrop blur keeps the painterly art legible behind the chip without
+     needing an opaque plate that would hide the building. */
+  backdrop-filter: blur(2px);
+  transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease),
+    transform var(--dur-1) var(--ease);
+}
+.ko-hit:hover,
+.ko-marker.hovered .ko-hit,
+.ko-hit:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--e-2), var(--glow-gold);
+  transform: translateY(-2px);
+}
+.ko-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.ko-name {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-head);
+  font-size: var(--t-md);
+  font-weight: var(--w-bold);
+  line-height: var(--lh-tight);
+  color: #fff;
+  text-shadow: 0 2px 6px #000;
+  white-space: nowrap;
+}
+.ko-note {
+  font-size: var(--t-xs);
+  font-weight: var(--w-med);
+  line-height: var(--lh-tight);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.ko-lock { font-size: var(--t-sm); filter: grayscale(1); }
+
+/* The thin line tying the chip to the building it names. */
+.ko-stalk {
+  width: 1px;
+  height: 14px;
+  background: linear-gradient(180deg, var(--line-strong), transparent);
+}
+
+/* ---------------------------------------------------------- status pips */
+
+.ko-pip {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  border: 2px solid #0c0714;
+  font-size: var(--t-2xs);
+  font-weight: var(--w-black);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: #0c0714;
+  pointer-events: none;
+}
+.ko-pip.st-ready { background: var(--ok); box-shadow: var(--glow-ready); animation: ko-bounce 1.6s var(--ease) infinite; }
+.ko-pip.st-incident { background: var(--danger); color: #fff; box-shadow: var(--glow-danger); animation: ko-throb 0.8s ease-in-out infinite; }
+.ko-pip.st-upgrade { background: var(--accent); box-shadow: var(--glow-gold); }
+.ko-pip.st-attention { background: var(--accent-2); color: #fff; box-shadow: var(--glow-violet); }
+.ko-pip.st-locked { background: transparent; border-color: transparent; box-shadow: none; }
+
+@keyframes ko-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes ko-throb {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ko-pip.st-ready,
+  .ko-pip.st-incident { animation: none; }
+}
+
+/* ------------------------------------------------------- per-status chip */
+
+.ko-marker.st-ready .ko-hit { border-color: rgba(95, 227, 138, 0.6); }
+.ko-marker.st-ready .ko-note { color: var(--ok); font-weight: var(--w-bold); }
+
+.ko-marker.st-incident .ko-hit {
+  border-color: var(--danger);
+  box-shadow: var(--e-2), var(--glow-danger);
+}
+.ko-marker.st-incident .ko-note { color: #ff9a8a; font-weight: var(--w-bold); }
+
+.ko-marker.st-upgrade .ko-hit { border-color: var(--line-gold); }
+.ko-marker.st-upgrade .ko-note { color: var(--accent); }
+
+.ko-marker.st-attention .ko-hit { border-color: rgba(176, 114, 255, 0.55); }
+.ko-marker.st-attention .ko-note { color: #d3b3ff; }
+
+/* Locked: the chip recedes to match the drained silhouette in the 3D scene,
+   but stays clickable — tapping it is how the player learns the requirement. */
+.ko-marker.st-locked .ko-hit {
+  border-style: dashed;
+  border-color: var(--line);
+  background: rgba(12, 8, 20, 0.8);
+  box-shadow: none;
+}
+.ko-marker.st-locked .ko-name { color: var(--fg-faint); text-shadow: none; }
+.ko-marker.st-locked .ko-note { color: var(--accent); font-weight: var(--w-bold); }
+.ko-marker.st-locked .ko-hit:hover { border-color: var(--line-gold); box-shadow: none; }
+
+/* --------------------------------------------------------------- mobile */
+
+/* Six labels on a 390px screen is a wall of text. Drop to the name plus the
+   pip; the note is available on tap via the sheet the marker opens. */
+@media (max-width: 620px) {
+  .ko-hit { padding: var(--s-1) var(--s-3); }
+  .ko-name { font-size: var(--t-sm); }
+  .ko-note { display: none; }
+  .ko-marker.st-incident .ko-note,
+  .ko-marker.st-ready .ko-note { display: block; font-size: var(--t-2xs); }
+  .ko-stalk { height: 10px; }
+}

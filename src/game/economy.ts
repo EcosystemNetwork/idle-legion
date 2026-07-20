@@ -18,7 +18,7 @@ import {
   WARCHEST_YIELD_PER_USD,
 } from "./config";
 import { equippedGearDefs, formatNum, globalBoost } from "./engine";
-import type { DerivedStats, GameState, OnchainListing, Rarity } from "./types";
+import type { DerivedStats, GameState, OnchainListing, Rarity, Tier } from "./types";
 
 // ---------------------------------------------------------------------------
 // Resource hierarchy
@@ -398,6 +398,15 @@ export function vaultYieldAt(state: GameState, usd: number): number {
 export function rarityColor(r: Rarity): string {
   return RARITY_META[r].color;
 }
+
+/** Gladiator tiers read as rarities everywhere the player sees them. */
+export const TIER_RARITY: Record<Tier, Rarity> = {
+  recruit: "common",
+  spearman: "uncommon",
+  archer: "rare",
+  cavalry: "epic",
+  champion: "legendary",
+};
 
 export function landLabel(kind: keyof typeof LAND_KIND_META): string {
   return LAND_KIND_META[kind].name;

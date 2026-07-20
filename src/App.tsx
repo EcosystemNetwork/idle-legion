@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 
 // Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
@@ -14,8 +14,8 @@ const AdminPanel = lazy(() => import("./components/AdminPanel"));
 const Treasury = lazy(() => import("./components/treasury/Treasury"));
 import type { TreasurySection } from "./components/treasury/Treasury";
 import Actor from "./components/Actor";
-import { INTERIOR } from "./game/interiors";
-import { RoomKek } from "./components/RoomScene";
+import { Chamber, DigSite } from "./components/stronghold/Chamber";
+import "./components/stronghold/stronghold.css";
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
@@ -27,15 +27,8 @@ import {
   GEAR_MAX_LEVEL,
   IMG,
   KEKIUS_MODEL,
-  KIT,
-  LAND_KIND_META,
-  LAND_MIN_MIGHT,
-  LAND_SLOTS,
-  LAND_YIELD,
-  MERCENARY_TIERS,
   MIGHT_PER_LEVEL,
   MILESTONE_EVERY,
-  ONCHAIN_LISTINGS,
   OUTPUT_PER_LEVEL,
   PVP_DAILY_ATTACKS,
   RAIDS,
@@ -60,16 +53,12 @@ import {
   arenaClassEdge,
   arenaSquad,
   arenaSquadPower,
-  bankPending,
-  bankWithdrawFee,
-  buildCost,
   canDescend,
   canSummonWith,
   classMultiplierVs,
   currentBoss,
   dailyAvailable,
   dailyReward,
-  dexPrice,
   dwellerById,
   dwellerClass,
   dwellerMaxHp,
@@ -81,31 +70,22 @@ import {
   gearDefOf,
   gearItemStats,
   gearLevel,
-  gearSellValue,
   gearUpgradeCost,
   healSalveCost,
-  heroSellValue,
   hpFrac,
   idleDwellers,
   inventoryGear,
   isOnRaid,
-  landClaimCost,
-  landSlotsLeft,
-  landUpgradeCost,
-  landYields,
   marketRerollCost,
   objectiveLabel,
   objectiveProgress,
   pendingRenown,
   pvpOpponents,
   pvpRankName,
-  quoteGoldToLegion,
-  quoteLegionToGold,
   raidSquadMight,
   recruitCost,
   renownBoost,
   roomCapacity,
-  roomRate,
   roomStoreCap,
   maxPopulation,
   squadClassEdge,
@@ -113,8 +93,6 @@ import {
   staminaFrac,
   summonCost,
   summonsUsed,
-  upgradeCost,
-  warChestStoreCap,
   worldBossLeaderboard,
   worldBossName,
   worldBossRank,
@@ -123,7 +101,7 @@ import {
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { CombatClass, Dweller, GameState, Gene, GearItem, GearSlot, LandKind, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Rarity, Room, Tier } from "./game/types";
+import type { CombatClass, Dweller, GameState, Gene, GearItem, GearSlot, LevelUpEvent, OfflineSummary, RaidReport, Room, Tier } from "./game/types";
 import {
   claimMirror,
   completeMission,
@@ -141,7 +119,7 @@ import {
   MIRROR_STREAK_DAY,
   SCRYING_MIRROR_SUPPLY,
 } from "./game/streak";
-import { nextUnlock, tabUnlock } from "./game/unlocks";
+import { tabUnlock } from "./game/unlocks";
 import { operatorId } from "./lib/insforge";
 import {
   ARENA_ONLINE,
@@ -153,6 +131,14 @@ import {
   type WbState,
 } from "./lib/arena";
 import "./App.css";
+// --- the redesigned shell: HUD, four-section nav, Next Objective card ---
+import { Hud } from "./ui/Hud";
+import { NavBar, type SectionBadge } from "./ui/NavBar";
+import { NextObjective } from "./ui/NextObjective";
+import { LoadingState, Sheet, SegItem } from "./ui/primitives";
+import { SECTION_OF, sectionDef, type SectionId, type Tab } from "./ui/nav";
+import { hotspotStates, nextDirective, type Directive } from "./game/guide";
+import "./ui/shell.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
 import { MuteButton } from "./fx/MuteButton";
@@ -161,42 +147,24 @@ import { clearSession, ensureSession } from "./lib/session";
 
 const GOLD_CHIP = ".chip-stat.gold";
 
-function shortAddr(a: string) {
-  return `${a.slice(0, 6)}…${a.slice(-4)}`;
-}
 
 // The Bazaar, Exchange, Bank, War Chest, Estates and Ledger used to be three
 // separate top-level tabs sitting next to each other like unrelated products.
 // They are now rooms inside one destination: `treasury`.
-type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "worldboss" | "duels" | "treasury" | "codex" | "operator";
+//
+// `Tab` itself now lives in ui/nav.ts alongside the four-section grouping those
+// destinations hang off (Kingdom / Legion / Battle / Treasury), so the nav model
+// and the routing can't drift apart.
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
-type Wallet = ReturnType<typeof useWallet>;
 
 // Real clip names in kekius-boss.glb: Idle, Spin, Taunt, Dance, Arise, Attack,
 // Walk, Dead, Run, ComboAttack. Pick a work-flavored loop per room.
 // What the room's 3D dweller does: a looping work clip plus one-shot breaks it
 // drops into every few seconds. Between them these cover every clip in the kek
 // GLB — Idle, Walk, Run, Attack, ComboAttack, Spin, Taunt, Dance, Arise, Dead.
-const KEK_WORK_ANIM: Record<string, { anim: string; breaks: string[] }> = {
-  mine: { anim: "Attack", breaks: ["Spin", "Idle"] },
-  forge: { anim: "ComboAttack", breaks: ["Attack", "Taunt"] },
-  granary: { anim: "Walk", breaks: ["Run", "Idle"] },
-  infirmary: { anim: "Idle", breaks: ["Arise", "Dance"] },
-  warroom: { anim: "Taunt", breaks: ["ComboAttack", "Run"] },
-  portal: { anim: "Spin", breaks: ["Arise", "Dance"] },
-};
-const KEK_ANIM_FALLBACK = { anim: "Idle", breaks: ["Taunt", "Dance", "Spin"] };
-// A room with an incapacitated worker plays it straight: down, then struggling
-// back up. `Dead` and `Arise` only ever show up here.
-const KEK_ANIM_DOWNED = { anim: "Dead", breaks: ["Arise"] };
 
-const RESOURCE_IMG: Record<string, string> = {
-  gold: IMG.gold,
-  provisions: IMG.provisions,
-  salves: KIT.res.crystal,
-};
 const SLOT_ICON: Record<GearSlot, string> = { weapon: "⚔️", armor: "🛡️", mount: "🐎" };
 const SLOT_LABEL: Record<GearSlot, string> = { weapon: "Weapon", armor: "Armor", mount: "Mount" };
 const RARITY: Record<Tier, { name: string; color: string; stars: number }> = {
@@ -248,41 +216,6 @@ function XpBar({ d, showText = false }: { d: Dweller; showText?: boolean }) {
       <i style={{ width: `${frac * 100}%` }} />
       {showText && <b>{Math.floor(d.xp)} / {need} XP</b>}
     </div>
-  );
-}
-
-// ---------------- character figure (draggable) ----------------
-
-function Figure({ d, onClick }: { d: Dweller; onClick?: () => void }) {
-  const delay = (d.id.charCodeAt(d.id.length - 1) % 10) * 0.15;
-  const geared = d.equipped.weapon || d.equipped.armor || d.equipped.mount;
-  const hurt = d.downed || d.hp < dwellerMaxHp(d);
-  return (
-    <button
-      type="button"
-      className={`fig apt-${d.aptitude} ${d.downed ? "is-downed" : ""}`}
-      draggable={!d.downed}
-      onDragStart={(e) => e.dataTransfer.setData("text/plain", d.id)}
-      style={{ animationDelay: `${delay}s` }}
-      title={`${d.name} · ${TIERS[d.tier].name} · Lv${d.level}${d.downed ? " · DOWNED — heal me" : ""}`}
-      onClick={onClick}
-    >
-      <img className="fig-img" src={TIER_PORTRAIT[d.tier]} alt={TIERS[d.tier].name} loading="lazy" />
-      <span className="fig-lvl">{d.level}</span>
-      {geared && <span className="fig-gear">⚔</span>}
-      {d.downed && <span className="fig-down" aria-hidden>✚</span>}
-      {hurt && <span className="fig-vitals" aria-hidden><HpBar d={d} /></span>}
-      <span className="fig-shadow" aria-hidden />
-    </button>
-  );
-}
-
-function GhostFigure({ onClick }: { onClick: () => void }) {
-  return (
-    <button type="button" className="fig ghost" onClick={onClick} title="Assign a dweller">
-      <span className="fig-plus">＋</span>
-      <span className="fig-shadow" aria-hidden />
-    </button>
   );
 }
 
@@ -351,6 +284,10 @@ export default function App() {
   const { state, stats, error: gameError, now, actions, syncIdentity } = game;
   const wallet = useWallet();
   const [tab, setTab] = useState<Tab>("kingdom");
+  /** Which of the four nav sections is highlighted. Derived from `tab`. */
+  const section: SectionId = SECTION_OF[tab] ?? "kingdom";
+  /** The player can fold the objective card away; the choice sticks. */
+  const [objCollapsed, setObjCollapsed] = useState(false);
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
   const [heroId, setHeroId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Pull | null>(null);
@@ -368,8 +305,6 @@ export default function App() {
   const [sessionEpoch, setSessionEpoch] = useState(0);
   const [jackpot, setJackpot] = useState(false);
 
-  // Progressive unlocks: the next system to work toward (null once all are open).
-  const nextTab = nextUnlock(state, stats.might);
 
   useUiSounds();
   useTabTitleEarnings(stats.goldPerSec, stats.fed);
@@ -380,10 +315,12 @@ export default function App() {
     return () => void flush(true);
   }, []);
 
-  // Report per-screen dwell time as the player switches tabs.
+  // Report per-screen dwell time as the player switches tabs. The Treasury is
+  // one tab but seven rooms, so it reports the room — otherwise the funnel that
+  // matters most (Bazaar → Ledger → War Chest) collapses into a single bucket.
   useEffect(() => {
-    setScreen(tab);
-  }, [tab]);
+    setScreen(tab === "treasury" ? `treasury:${treasuryRoom}` : tab);
+  }, [tab, treasuryRoom]);
 
   // Report identity + fire a one-time login event when the wallet connects.
   // Also repoint cloud saves at the player's identity so progress roams across
@@ -549,18 +486,149 @@ export default function App() {
   const assignRoom = assignRoomId ? state.rooms.find((r) => r.id === assignRoomId) : null;
   const hero = heroId ? dwellerById(state, heroId) : null;
 
-  const openBox = () => {
+  const openBox = useCallback(() => {
     const pull = game.openLunchbox();
     if (pull) setReveal(pull);
     else sfx.error();
+  }, [game]);
+
+  /* ---------------------------------------------------------------------- */
+  /* The redesigned shell                                                    */
+  /* ---------------------------------------------------------------------- */
+
+  // The single "what do I do next" directive. Derived, never stored.
+  const directive = nextDirective(state, stats, now);
+
+  // Live per-building status for the map hotspots: ready-to-collect, incident,
+  // upgrade-affordable, needs-staffing, or locked-with-a-requirement.
+  const hotspots = hotspotStates(
+    state,
+    stats,
+    (id) => isOpen(id as Tab),
+    (id) => tabUnlock(state, stats.might, id).hint,
+  );
+
+  /**
+   * Whether a destination should appear in the nav at all.
+   *
+   * `isOpen` deliberately treats the Operator board as always-unlocked (it is
+   * gated by *owning* a Scrying Mirror, not by progression), which is right for
+   * routing but wrong for display — without this the Treasury section would
+   * show from turn one on the strength of a board the player can't open.
+   */
+  const canSee = useCallback(
+    (id: Tab) => (id === "operator" ? mirror.serial != null : isOpen(id)),
+    [isOpen, mirror.serial],
+  );
+
+  /** Jump to a section, landing on its first unlocked destination. */
+  const goSection = useCallback(
+    (id: SectionId) => {
+      const def = sectionDef(id);
+      const first = def.tabs.find((t) => canSee(t.id)) ?? def.tabs[0];
+      setTab(first.id);
+    },
+    [canSee],
+  );
+
+  /** Run whatever the Next Objective card is pointing at. */
+  const runDirective = useCallback(
+    (d: Directive) => {
+      if (d.act) {
+        switch (d.act) {
+          case "collectAll": {
+            const el = document.querySelector(".hud-collect");
+            if (el instanceof HTMLElement) {
+              const c = centerOf(el);
+              coinArc(c, GOLD_CHIP, 22);
+              ring(c.x, c.y, "#9dfab0", 20);
+            }
+            actions.collectAll();
+            return;
+          }
+          case "healAll": return actions.healAll();
+          case "claimDaily": return handleClaimDaily();
+          case "claimRaid": return actions.claimRaid();
+          case "openCrate": return openBox();
+          case "claimObjective": return d.actArg ? actions.claimObjective(d.actArg) : undefined;
+        }
+      }
+      if (d.goTo) goTab(d.goTo.tab);
+    },
+    [actions, handleClaimDaily, openBox, goTab],
+  );
+
+  // Nav badges. Green = something to claim, violet = something changed.
+  const badges: Partial<Record<SectionId, SectionBadge>> = {
+    kingdom:
+      state.incident != null
+        ? { attention: true }
+        : state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1)
+          ? { attention: true }
+          : {},
+    legion:
+      state.lunchboxes > 0
+        ? { attention: true, count: state.lunchboxes }
+        : stats.woundedCount > 0
+          ? { info: true, count: stats.woundedCount }
+          : {},
+    battle:
+      state.activeRaid && now >= state.activeRaid.endsAt
+        ? { attention: true }
+        : state.worldBoss.lastReward
+          ? { attention: true }
+          : state.pvp.attacksLeft > 0
+            ? { info: true, count: state.pvp.attacksLeft }
+            : {},
+    treasury:
+      state.warChest.stored >= 1
+        ? { attention: true }
+        : state.mercenaryBoost > 0
+          ? { info: true }
+          : {},
   };
+
+  const anyReady =
+    state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1) || state.warChest.stored >= 1;
+  const goldShown = useCountUp(state.gold);
+
+  // Everything that isn't the world renders inside a Sheet that slides over it,
+  // so the kingdom is never more than one dismissal away.
+  const sheetOpen = tab !== "kingdom";
+  const activeSection = sectionDef(section);
+  const sheetTabs = activeSection.tabs.filter((t) => canSee(t.id));
 
   return (
     <div className="app">
-      <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} onOpenBox={openBox} onHealAll={actions.healAll} />
+      <Hud
+        state={state}
+        stats={stats}
+        goldShown={goldShown}
+        anyReady={anyReady}
+        wallet={{
+          totalUsd: wallet.totalUsd,
+          address: wallet.session?.address ?? null,
+          connected: Boolean(wallet.session),
+        }}
+        onCollectAll={() => {
+          const el = document.querySelector(".hud-collect");
+          if (el instanceof HTMLElement) {
+            const c = centerOf(el);
+            coinArc(c, GOLD_CHIP, 22);
+            ring(c.x, c.y, "#9dfab0", 20);
+          }
+          actions.collectAll();
+        }}
+        onOpenCrate={openBox}
+        onHealAll={actions.healAll}
+        onConnect={() => goTreasury("ledger")}
+      />
 
-      <DailyBanner state={state} now={now} onClaim={handleClaimDaily} />
+      <NavBar active={section} badges={badges} isOpen={canSee} onSelect={goSection} />
 
+      {/* The Scrying Mirror is a one-time, supply-capped relic on a live streak
+          clock, so it stays a banner rather than joining the directive ladder —
+          missing it is unrecoverable in a way nothing else here is. */}
       {state.daily.streak >= MIRROR_STREAK_DAY && mirror.serial == null && !mirror.soldOut && (
         <div className="banner mirror-prompt" role="status">
           <span className="daily-icon">🔮</span>
@@ -573,54 +641,6 @@ export default function App() {
           </button>
         </div>
       )}
-
-      {state.incident && (
-        <div className="banner incident" role="alert">
-          <span className="incident-icon">🔥</span>
-          <strong>{state.incident.label}</strong>
-          <span className="muted small">
-            fighting it off — {Math.max(0, Math.ceil((state.incident.endsAt - now) / 1000))}s
-          </span>
-        </div>
-      )}
-
-      <nav className="tabs">
-        {(
-          [
-            ["kingdom", "🏰 Kingdom"],
-            ["stronghold", "⛏️ Stronghold"],
-            ["legion", "🛡️ Legion"],
-            ["arena", "⚔️ Arena"],
-            ["raids", "🗺️ Raids"],
-            ["worldboss", "🐉 World Boss"],
-            ["duels", "🏟️ Duels"],
-            ["treasury", "🏛️ Treasury"],
-            ["codex", "📜 Codex"],
-          ] as const
-        )
-          // Progressive unlocks: hide systems the player hasn't earned yet, so a
-          // new legion sees 3 tabs instead of 11. (See game/unlocks.ts.)
-          .filter(([id]) => isOpen(id))
-          .map(([id, label]) => (
-          <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
-            {label}
-            {id === "treasury" && (state.mercenaryBoost > 0 || state.warChest.stored >= 1) && <i className="dot" />}
-            {id === "legion" && state.lunchboxes > 0 && <i className="dot gift" />}
-            {id === "duels" && state.pvp.attacksLeft > 0 && <i className="dot gift" />}
-            {id === "worldboss" && state.worldBoss.lastReward && <i className="dot" />}
-          </button>
-        ))}
-        {nextTab && (
-          <span className="tab-locked" title={nextTab.hint}>
-            🔒 {nextTab.hint}
-          </span>
-        )}
-        {mirror.serial != null && (
-          <button className={`op-tab ${tab === "operator" ? "active" : ""}`} onClick={() => setTab("operator")}>
-            🔮 Operator
-          </button>
-        )}
-      </nav>
 
       {(gameError || wallet.error) && (
         <div className="banner error" role="alert">
@@ -637,64 +657,107 @@ export default function App() {
         </div>
       )}
 
-      {tab === "kingdom" && (
+      {/* ---- The world. Always mounted; everything else slides over it. ---- */}
+      <main className="app-stage">
+        <NextObjective
+          directive={directive}
+          onAct={runDirective}
+          collapsed={objCollapsed}
+          onToggle={() => setObjCollapsed((c) => !c)}
+        />
+
         <Suspense fallback={<KingdomLoading />}>
           <GameWorld
-            onEnter={(id) => setTab(id as Tab)}
+            onEnter={(id) => goTab(id as Tab)}
             dwellers={state.dwellers.length}
+            hotspots={hotspots}
             fallback={
-              <KingdomLoading note="3D unavailable on this device — use the tabs above to move around the kingdom." />
+              <KingdomLoading note="3D isn't available on this device — the Kingdom, Legion, Battle and Treasury buttons take you everywhere the map does." />
             }
           />
         </Suspense>
-      )}
+      </main>
 
-      {tab === "stronghold" && (
-        <StrongholdView
-          state={state}
-          stats={stats}
-          now={now}
-          actions={actions}
-          onAssign={(id) => setAssignRoomId(id)}
-          onHero={(id) => setHeroId(id)}
-          onOpenWarChest={() => goTreasury("warchest")}
-          onOpenRaids={() => goTab("raids")}
-        />
-      )}
-
-      {tab === "legion" && (
-        <LegionView state={state} actions={actions} onHero={(id) => setHeroId(id)} onOpenBox={openBox} />
-      )}
-
-      {tab === "arena" && <ArenaView game={game} />}
-
-      {tab === "raids" && <RaidsView state={state} now={now} actions={actions} />}
-
-      {tab === "worldboss" && <WorldBossView game={game} />}
-
-      {tab === "duels" && <DuelsView state={state} actions={actions} />}
-
-      {tab === "treasury" && (
-        <Suspense fallback={<KingdomLoading note="Opening the treasury doors…" />}>
-          <Treasury
+      {/* ---- Every other destination, as a sheet over the world. ---- */}
+      <Sheet
+        open={sheetOpen}
+        title={activeSection.label}
+        sub={sheetTabs.find((t) => t.id === tab)?.blurb}
+        icon={activeSection.icon}
+        wide
+        onClose={() => setTab("kingdom")}
+        tabs={
+          sheetTabs.length > 1 ? (
+            <>
+              {sheetTabs.map((t) => (
+                <SegItem
+                  key={t.id}
+                  active={tab === t.id}
+                  onClick={() => setTab(t.id)}
+                  dot={
+                    t.id === "legion" && state.lunchboxes > 0
+                      ? "attention"
+                      : t.id === "duels" && state.pvp.attacksLeft > 0
+                        ? "info"
+                        : t.id === "worldboss" && state.worldBoss.lastReward
+                          ? "attention"
+                          : undefined
+                  }
+                >
+                  {t.icon} {t.label}
+                </SegItem>
+              ))}
+            </>
+          ) : undefined
+        }
+      >
+        {tab === "stronghold" && (
+          <StrongholdView
             state={state}
             stats={stats}
             now={now}
             actions={actions}
-            wallet={wallet}
-            section={treasuryRoom}
-            onSection={setTreasuryRoom}
+            onAssign={(id) => setAssignRoomId(id)}
             onHero={(id) => setHeroId(id)}
-            onGoTo={(t) => goTab(t as Tab)}
+            onOpenWarChest={() => goTreasury("warchest")}
+            onOpenRaids={() => goTab("raids")}
           />
-        </Suspense>
-      )}
+        )}
 
-      {tab === "codex" && <CodexView />}
+        {tab === "legion" && (
+          <LegionView state={state} actions={actions} onHero={(id) => setHeroId(id)} onOpenBox={openBox} />
+        )}
 
-      {tab === "operator" && mirror.serial != null && (
-        <OperatorView serial={mirror.serial} actions={actions} identity={walletIdentity} />
-      )}
+        {tab === "arena" && <ArenaView game={game} />}
+
+        {tab === "raids" && <RaidsView state={state} now={now} actions={actions} />}
+
+        {tab === "worldboss" && <WorldBossView game={game} />}
+
+        {tab === "duels" && <DuelsView state={state} actions={actions} />}
+
+        {tab === "treasury" && (
+          <Suspense fallback={<LoadingState label="Opening the treasury doors…" />}>
+            <Treasury
+              state={state}
+              stats={stats}
+              now={now}
+              actions={actions}
+              wallet={wallet}
+              section={treasuryRoom}
+              onSection={setTreasuryRoom}
+              onHero={(id) => setHeroId(id)}
+              onGoTo={(t) => goTab(t as Tab)}
+            />
+          </Suspense>
+        )}
+
+        {tab === "codex" && <CodexView />}
+
+        {tab === "operator" && mirror.serial != null && (
+          <OperatorView serial={mirror.serial} actions={actions} identity={walletIdentity} />
+        )}
+      </Sheet>
 
       {assignRoom && (
         <AssignModal
@@ -796,130 +859,6 @@ export default function App() {
   );
 }
 
-// ---------------- resource bar ----------------
-
-function ResourceBar({
-  state,
-  stats,
-  wallet,
-  onCollectAll,
-  onOpenBox,
-  onHealAll,
-}: {
-  state: GameState;
-  stats: Stats;
-  wallet: Wallet;
-  onCollectAll: () => void;
-  onOpenBox: () => void;
-  onHealAll: () => void;
-}) {
-  const anyReady =
-    state.rooms.some((r) => roomStoreCap(r) > 0 && r.stored >= 1) || state.warChest.stored >= 1;
-  const goldShown = useCountUp(state.gold);
-  return (
-    <section className="resources">
-      <Chip cls="gold" img={KIT.res.gold} cap="Gold" v={formatNum(goldShown)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
-      <Chip
-        cls={`prov ${stats.fed ? "" : "warn"}`}
-        img={KIT.res.provisions}
-        cap={stats.fed ? "Provisions" : "Starving"}
-        v={formatNum(state.provisions)}
-        s={`${stats.provisionsPerSec >= 0 ? "+" : ""}${stats.provisionsPerSec.toFixed(2)}/s`}
-      />
-      <Chip
-        cls={`salves ${stats.woundedCount > 0 && state.salves <= 0 ? "warn" : ""}`}
-        img={KIT.res.crystal}
-        cap="Salves"
-        v={formatNum(state.salves)}
-        s={`⛑ ${stats.salvesPerSec >= 0 ? "+" : ""}${stats.salvesPerSec.toFixed(2)}/s`}
-      />
-      <Chip
-        cls="legion-tok"
-        icon="💠"
-        cap="$LEGION"
-        v={formatNum(state.legion)}
-        s={stats.legionPerSec > 0 ? `+${stats.legionPerSec.toFixed(2)}/s` : "—"}
-      />
-      <Chip
-        cls="pop"
-        icon="🛡️"
-        cap="Population"
-        v={`${stats.population}/${maxPopulation(state)}`}
-        s={`${stats.idleCount} idle`}
-      />
-      <Chip cls="might" icon="⚔️" cap="Might" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
-      {stats.woundedCount > 0 && (
-        <button className="chip-stat wounded hot" onClick={onHealAll} title="Heal all wounded with salves">
-          <span className="ci">⛑️</span>
-          <span className="cv">
-            <span className="cap">Wounded</span>
-            <b>{stats.woundedCount}</b>
-            <small>heal all</small>
-          </span>
-        </button>
-      )}
-      {state.renown > 0 && (
-        <Chip
-          cls="renown"
-          icon="🏅"
-          cap="Renown"
-          v={`${state.renown}`}
-          s={`+${Math.round(renownBoost(state) * 100)}% output`}
-        />
-      )}
-      <button className={`chip-stat gift ${state.lunchboxes > 0 ? "hot" : ""}`} onClick={onOpenBox} disabled={state.lunchboxes <= 0}>
-        <span className="ci"><img className="ci-img" src={KIT.res.lunchbox} alt="" /></span>
-        <span className="cv">
-          <span className="cap">Crates</span>
-          <b>{state.lunchboxes}</b>
-          <small>open crate</small>
-        </span>
-      </button>
-      {/* One balance, one word. The address moved to the Treasury's Ledger,
-          where it belongs — a resource bar is not the place to teach hex. */}
-      <Chip
-        cls="onchain"
-        icon="🏛️"
-        cap="Treasury"
-        v={wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
-        s={wallet.session ? "your account" : "optional"}
-      />
-      <button
-        type="button"
-        className={`collect-all ${anyReady ? "ready" : ""}`}
-        disabled={!anyReady}
-        onClick={(e) => {
-          const c = centerOf(e.currentTarget);
-          coinArc(c, GOLD_CHIP, 22);
-          ring(c.x, c.y, "#9dfab0", 20);
-          onCollectAll();
-        }}
-      >
-        Collect all
-      </button>
-    </section>
-  );
-}
-
-function Chip({
-  cls,
-  icon,
-  img,
-  cap,
-  v,
-  s,
-}: { cls: string; icon?: string; img?: string; cap: string; v: string; s: string }) {
-  return (
-    <div className={`chip-stat ${cls}`}>
-      <span className="ci">{img ? <img className="ci-img" src={img} alt="" /> : icon}</span>
-      <span className="cv">
-        <span className="cap">{cap}</span>
-        <b>{v}</b>
-        <small>{s}</small>
-      </span>
-    </div>
-  );
-}
 
 // ---------------- stronghold ----------------
 
@@ -979,12 +918,19 @@ function StrongholdView({
               onHero={onHero}
               onOpenWarChest={onOpenWarChest}
               onOpenRaids={onOpenRaids}
+              // The Master keeps his 3D model; every other chamber is populated
+              // by the CSS crew, which walks, works and carries its aptitude.
+              masterSlot={room.type === "quarters" ? <ModelBoss src={KEKIUS_MODEL} /> : undefined}
             />
+          ))}
+          {/* Undug rooms sit in the grid as marked-out rock rather than in a
+              button list below it — the stronghold always shows its own future. */}
+          {BUILDABLE.map((type) => (
+            <DigSite key={type} type={type} state={state} actions={actions} />
           ))}
         </div>
       </div>
       <div className="vault-floor">
-        <BuildMenu state={state} actions={actions} />
         <DescendPanel state={state} actions={actions} />
       </div>
     </section>
@@ -1134,22 +1080,6 @@ function OfflineModal({ summary, onClose }: { summary: OfflineSummary; onClose: 
   );
 }
 
-// ---------------- daily-login reward ----------------
-
-function DailyBanner({ state, now, onClaim }: { state: GameState; now: number; onClaim: () => void }) {
-  if (!dailyAvailable(state, now)) return null;
-  const r = dailyReward(state, now);
-  return (
-    <div className="banner daily" role="status">
-      <span className="daily-icon">🎁</span>
-      <strong>Daily tribute ready</strong>
-      <span className="muted small">
-        Day {r.streak} streak · 🪙 {formatNum(r.gold)}{r.lunchboxes > 0 ? " + 🎁 lunchbox" : ""}
-      </span>
-      <button type="button" className="btn" onClick={onClaim}>Claim</button>
-    </div>
-  );
-}
 
 // ---------------- Scrying Mirror reveal + day-69 jackpot ----------------
 
@@ -1593,222 +1523,6 @@ function SlaveMarket({ state, actions }: { state: GameState; actions: Actions })
   );
 }
 
-function Chamber({
-  room,
-  state,
-  stats,
-  now,
-  actions,
-  onAssign,
-  onHero,
-  onOpenWarChest,
-  onOpenRaids,
-}: {
-  room: Room;
-  state: GameState;
-  stats: Stats;
-  now: number;
-  actions: Actions;
-  onAssign: (roomId: string) => void;
-  onHero: (id: string) => void;
-  onOpenWarChest: () => void;
-  onOpenRaids: () => void;
-}) {
-  const [over, setOver] = useState(false);
-  const def = ROOMS[room.type];
-  const isVault = room.type === "warchest";
-  const cap = roomCapacity(room);
-  // The Treasury Vault yields from staked USD into its own pool (state.warChest).
-  const storeCap = isVault ? warChestStoreCap(state) : roomStoreCap(room);
-  const storedRaw = isVault ? state.warChest.stored : room.stored;
-  const rate = roomRate(state, room, stats.fed);
-  const stored = Math.floor(storedRaw);
-  const ready = storeCap > 0 && stored >= 1;
-  const fill = storeCap > 0 ? Math.min(1, storedRaw / storeCap) : 0;
-  const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
-  const incident = state.incident?.roomId === room.id ? state.incident : null;
-  const kekAnim = workers.some((d) => d.downed)
-    ? KEK_ANIM_DOWNED
-    : (KEK_WORK_ANIM[room.type] ?? KEK_ANIM_FALLBACK);
-  const upCost = upgradeCost(room);
-  const resImg = def.produces ? RESOURCE_IMG[def.produces] : null;
-  const resting =
-    room.type === "hall"
-      ? state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id)).slice(0, 6)
-      : [];
-  const master =
-    room.type === "quarters" ? state.dwellers.find((d) => d.roomId === room.id) : null;
-
-  const acceptsDrop = cap > 0 || room.type === "hall";
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setOver(false);
-    const id = e.dataTransfer.getData("text/plain");
-    if (!id) return;
-    if (room.type === "hall") actions.unassign(id);
-    else if (cap > 0) actions.assign(id, room.id);
-  };
-
-  return (
-    <div
-      className={`chamber ${room.type} ${incident ? "on-fire" : ""} ${ready ? "is-ready" : ""} ${over ? "drop-over" : ""}`}
-      onDragOver={(e) => {
-        if (acceptsDrop) {
-          e.preventDefault();
-          setOver(true);
-        }
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={onDrop}
-    >
-      {room.type === "quarters" ? (
-        <div className="ch-model">
-          <ModelBoss src={KEKIUS_MODEL} />
-        </div>
-      ) : (
-        <img className="ch-art" src={INTERIOR[room.type] ?? ROOM_ART[room.type]} alt="" aria-hidden loading="lazy" />
-      )}
-      <div className="ch-glow" aria-hidden />
-
-      <div className="ch-plaque">
-        <span className="ch-icon">{def.icon}</span>
-        <span className="ch-name">{def.name}</span>
-        <span className="ch-lvl">Lv {room.level}</span>
-        {def.aptitude && <span className="ch-apt">{APTITUDE_ICON[def.aptitude]}</span>}
-      </div>
-
-      {room.type === "quarters" ? (
-        <div className="ch-master">
-          {master && (
-            <button type="button" className="master-plate" onClick={() => onHero(master.id)}>
-              <span className="master-crown">👑</span>
-              <span className="master-name">{master.name}</span>
-              <span className="master-might">{Math.floor(dwellerMight(master, state))} ⚔</span>
-              <span className="master-cta">tap to equip</span>
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="ch-stage">
-          {workers.length > 0 && (
-            <div className="ch-worker">
-              <RoomKek {...kekAnim} size={130} />
-            </div>
-          )}
-          <span className="ch-mood" aria-hidden>
-            {incident ? "😡" : !stats.fed ? "😣" : ready || rate > 0 ? "😄" : "🙂"}
-          </span>
-          <div className="crew">
-            {workers.map((d) => (
-              <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
-            ))}
-            {cap > 0 &&
-              Array.from({ length: Math.max(0, cap - workers.length) }).map((_, i) => (
-                <GhostFigure key={i} onClick={() => onAssign(room.id)} />
-              ))}
-            {resting.map((d) => (
-              <Figure key={d.id} d={d} onClick={() => onHero(d.id)} />
-            ))}
-          </div>
-          <div className="ch-ground" aria-hidden />
-        </div>
-      )}
-
-      {ready && resImg && (
-        <button
-          type="button"
-          className="bubble"
-          onClick={(e) => {
-            const c = centerOf(e.currentTarget);
-            const res = def.produces;
-            if (res === "gold") {
-              const coins = Math.min(24, 6 + Math.round(Math.log10(stored + 1) * 6));
-              coinArc(c, GOLD_CHIP, coins);
-              ring(c.x, c.y, "#ffd76b", 16);
-              floatText(c.x, c.y - 8, `+${formatNum(stored)}`, { color: "#ffe08a", big: stored > 100 });
-            } else {
-              const color = res === "provisions" ? "#5fe38a" : "#ff8a7a";
-              burst(c.x, c.y, { color, count: 12, kind: "spark", power: 4 });
-              floatText(c.x, c.y - 8, `+${formatNum(stored)}`, { color });
-              sfx.collect();
-            }
-            actions.collect(room.id);
-          }}
-        >
-          <img className="b-img" src={resImg} alt="" aria-hidden />
-          <span className="b-amt">+{formatNum(stored)}</span>
-        </button>
-      )}
-
-      <div className="ch-foot">
-        {storeCap > 0 ? (
-          <div className="prod-meter" title={`${rate.toFixed(1)}/s`}>
-            <i style={{ width: `${fill * 100}%` }} className={ready ? "full" : ""} />
-            <b>+{rate.toFixed(1)}/s</b>
-          </div>
-        ) : (
-          <span className="ch-note">{def.description}</span>
-        )}
-        <div className="ch-ctrls">
-          {def.produces && !isVault && (
-            <button type="button" className="chip-btn" title="Rush — risks an incident" onClick={() => actions.rush(room.id)}>
-              ⚡
-            </button>
-          )}
-          {cap > 0 && (
-            <button type="button" className="chip-btn" title="Auto-staff" onClick={() => actions.autoStaff(room.id)}>
-              👥
-            </button>
-          )}
-          {room.type === "warroom" && (
-            <button type="button" className="chip-btn go" onClick={onOpenRaids}>
-              Raid ▸
-            </button>
-          )}
-          {room.type === "warchest" && (
-            <button type="button" className="chip-btn go" onClick={onOpenWarChest}>
-              Vault ▸
-            </button>
-          )}
-          {room.type !== "warchest" && (
-            <button type="button" className="chip-btn up" disabled={state.gold < upCost} onClick={() => actions.upgrade(room.id)}>
-              ▲ {formatNum(upCost)}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {incident && (
-        <div className="incident-overlay">
-          🔥 {incident.label}
-          <span>{Math.max(0, Math.ceil((incident.endsAt - now) / 1000))}s</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function BuildMenu({ state, actions }: { state: GameState; actions: Actions }) {
-  return (
-    <div className="build-menu">
-      <span className="build-label">⛏ DIG A NEW ROOM</span>
-      <div className="build-row">
-        {BUILDABLE.map((type) => {
-          const def = ROOMS[type];
-          const exists = def.unique && state.rooms.some((r) => r.type === type);
-          const cost = buildCost(type);
-          return (
-            <button key={type} className={`build-btn ${type}`} disabled={exists || state.gold < cost} onClick={() => actions.build(type)} title={def.description}>
-              <span className="bi">{def.icon}</span>
-              <span className="bn">{def.name}</span>
-              <span className="bc">{exists ? "built" : `🪙 ${formatNum(cost)}`}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ---------------- legion ----------------
 

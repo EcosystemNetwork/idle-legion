@@ -53,6 +53,7 @@ import {
   NETWORK_FEE_USD,
   RESOURCES,
   RESOURCE_TIER_META,
+  TIER_RARITY,
   companyTier,
   listingFacts,
   nextCompanyTier,
@@ -65,6 +66,7 @@ import TreasuryIdentity from "./TreasuryIdentity";
 import TxSheet from "./TxSheet";
 import { useTreasuryTx } from "./useTreasuryTx";
 import type { TxIntent } from "./useTreasuryTx";
+import "./treasury.css";
 
 type Actions = ReturnType<typeof useGame>["actions"];
 type Wallet = ReturnType<typeof useWallet>;
@@ -119,7 +121,7 @@ export default function Treasury({
 }) {
   const tx = useTreasuryTx(
     (amount) => wallet.fundWarChest(amount),
-    () => wallet.error,
+    wallet.readError,
   );
   const [rewardTarget, setRewardTarget] = useState<() => void>(() => () => {});
 
@@ -441,12 +443,13 @@ function Bazaar({
     return out;
   }, [kind, rarity, sort, query]);
 
-  const canBuy = Boolean(wallet.session && wallet.caps.particle && !wallet.busy);
-  const reason = !wallet.caps.particle
-    ? "Premium stalls are unavailable in this build."
-    : !wallet.session
-      ? "Open a treasury account in the Ledger first."
-      : "One moment…";
+  // Signed out is not an error state — the card still opens, it just routes to
+  // the Ledger first. A disabled button with a tooltip teaches nothing.
+  const signedOut = wallet.caps.particle && !wallet.session;
+  const canBuy = Boolean(wallet.caps.particle && !wallet.busy);
+  const reason = wallet.caps.particle
+    ? "One moment…"
+    : "Premium stalls are unavailable in this build.";
 
   return (
     <div className="tr-bazaar">
@@ -470,11 +473,11 @@ function Bazaar({
             </div>
             <div className="sell-grid">
               {sellable.map((d) => (
-                <div key={d.id} className="sell-item" style={{ ["--rar" as string]: RARITY_META[d.tier === "champion" ? "legendary" : "rare"].color }}>
+                <div key={d.id} className="sell-item" style={{ ["--rar" as string]: RARITY_META[TIER_RARITY[d.tier]].color }}>
                   <img src={TIER_PORTRAIT[d.tier]} alt={d.name} onClick={() => onHero(d.id)} />
                   <div className="sell-info">
                     <span className="sell-name">{d.name}</span>
-                    <span className="sell-tier">
+                    <span className="sell-tier" style={{ color: RARITY_META[TIER_RARITY[d.tier]].color }}>
                       {TIERS[d.tier].name} Lv{d.level}
                     </span>
                   </div>
@@ -592,7 +595,7 @@ function Bazaar({
             </select>
           </div>
 
-          <div className="stall-grid">
+          <div className="bz-grid">
             {listings.length === 0 && <p className="muted small">Nothing in the stalls matches that.</p>}
             {listings.map((l) => (
               <ListingCard
@@ -600,8 +603,9 @@ function Bazaar({
                 listing={l}
                 facts={listingFacts(state, stats, l)}
                 canBuy={canBuy}
+                ctaLabel={signedOut ? "Sign in to buy" : "Review"}
                 disabledReason={reason}
-                onBuy={() => onBuy(l)}
+                onBuy={() => (signedOut ? onSection("ledger") : onBuy(l))}
               />
             ))}
           </div>

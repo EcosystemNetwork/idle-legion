@@ -65,11 +65,9 @@ const UNLOCK_DEST: Record<string, { section: SectionId; tab: Tab }> = {
   raids: DEEP,
   arena: RAIDS_TO,
   codex: RAIDS_TO,
-  market: DEEP,
+  treasury: DEEP,
   duels: ARENA,
   worldboss: ARENA,
-  realm: RAIDS_TO,
-  exchange: DEEP,
 };
 
 /**
@@ -254,7 +252,7 @@ export function nextDirective(state: GameState, stats: DerivedStats, now: number
       reward: `Unlocks ${labelOf(gate.id)}`,
       cta: "Show me where",
       goTo: dest,
-      progress: unlockProgress(state, stats, gate.id),
+      progress: unlockProgress(state, gate.id),
     };
   }
 
@@ -310,28 +308,20 @@ function labelOf(id: string): string {
     case "raids": return "Raids";
     case "arena": return "the Arena";
     case "codex": return "the Codex";
-    case "market": return "the Bazaar";
+    case "treasury": return "the Treasury";
     case "duels": return "Duels";
     case "worldboss": return "the World Boss";
-    case "realm": return "Land";
-    case "exchange": return "the Exchange";
     default: return id;
   }
 }
 
 /** Progress toward an unlock gate, where the gate is a countable threshold. */
-function unlockProgress(
-  state: GameState,
-  stats: DerivedStats,
-  id: string,
-): Directive["progress"] {
+function unlockProgress(state: GameState, id: string): Directive["progress"] {
   switch (id) {
     case "arena": return { value: state.totalRaids, target: 1, unit: "raids won" };
-    case "market": return { value: state.totalGoldEarned, target: 5_000, unit: "total gold" };
-    case "exchange": return { value: state.totalGoldEarned, target: 25_000, unit: "total gold" };
+    case "treasury": return { value: state.totalGoldEarned, target: 5_000, unit: "total gold" };
     case "duels": return { value: state.totalBossWins, target: 1, unit: "bosses felled" };
     case "worldboss": return { value: state.totalBossWins, target: 2, unit: "bosses felled" };
-    case "realm": return { value: state.totalRaids, target: 3, unit: "raids won" };
     case "codex": return { value: state.gear.length, target: 1, unit: "relics found" };
     default: return undefined;
   }
@@ -421,9 +411,9 @@ export function hotspotStates(
         : { status: "idle", note: `${Math.floor(stats.might)} might` },
   );
 
-  // Bazaar — the economy.
+  // Treasury — the economy.
   put(
-    "market",
+    "treasury",
     state.mercenaryBoost > 0
       ? { status: "ready", note: "Mercenary boost active" }
       : { status: "idle", note: "Trade on-chain" },

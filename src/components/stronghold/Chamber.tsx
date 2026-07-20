@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   aptitudeMatches,
   dwellerMaxHp,
+  dwellerMight,
   formatNum,
   hpFrac,
   upgradeCost,
@@ -25,7 +26,10 @@ import { APTITUDE_ICON, APTITUDE_LABEL, ROOMS, TIER_PORTRAIT, TIERS } from "../.
 import { INTERIOR } from "../../game/interiors";
 import { PROP_BY_ID, ROOM_TIERS, propFitsRoom, roomArt } from "../../game/rooms";
 import { deriveRoomVisual, type RoomBadge, type RoomVisual } from "../../game/roomState";
-import type { Actions } from "../../hooks/useGame";
+import type { useGame } from "../../hooks/useGame";
+
+/** The action surface `useGame` hands out — inferred, so it can't drift. */
+type Actions = ReturnType<typeof useGame>["actions"];
 import type { DerivedStats, Dweller, GameState, PropItem, Room, RoomType } from "../../game/types";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "../../fx/juice";
 import { useMotionBudget } from "../../fx/quality";
@@ -158,6 +162,9 @@ export function Chamber(props: ChamberProps) {
     }
   };
 
+  // The Master isn't a "worker" — he holds court, tracked by roomId alone.
+  const master = props.masterSlot ? state.dwellers.find((d) => d.roomId === room.id) : null;
+
   // Off-duty legionaries drift through the Hall — they aren't "workers", but
   // showing them is the entire read of the room.
   const loiterers = isHall
@@ -195,7 +202,19 @@ export function Chamber(props: ChamberProps) {
       <Shell visual={v} type={room.type} />
       <PropLayer visual={v} state={state} />
       {props.masterSlot ? (
-        <div className="ch-master-model">{props.masterSlot}</div>
+        <>
+          <div className="ch-master-model">{props.masterSlot}</div>
+          {master && (
+            <div className="ch-master">
+              <button type="button" className="master-plate" onClick={() => onHero(master.id)}>
+                <span className="master-crown">👑</span>
+                <span className="master-name">{master.name}</span>
+                <span className="master-might">{Math.floor(dwellerMight(master, state))} ⚔</span>
+                <span className="master-cta">tap to equip</span>
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <CrewLayer
           visual={v}
@@ -306,7 +325,20 @@ function Shell({ visual, type }: { visual: RoomVisual; type: RoomType }) {
   const art = INTERIOR[type] ?? roomArt(type, visual.tier);
   return (
     <div className="ch-shell" aria-hidden>
-      <img className="ch-art" src={art} alt="" loading="lazy" />
+      {/* Hewn rock sits under every chamber. Most shell/interior plates in
+          ART_BRIEF.md aren't drawn yet, so a 404 has to degrade to "a hole in
+          the mountain" — which is exactly what a tier-1 room IS — rather than
+          to a black rectangle. When the art lands it simply covers this. */}
+      <span className="ch-rock" />
+      <img
+        className="ch-art"
+        src={art}
+        alt=""
+        loading="lazy"
+        onError={(e) => {
+          e.currentTarget.style.display = "none";
+        }}
+      />
       {/* Tier dressing: each layer is gated by data-tier in CSS, so upgrading a
           room visibly *adds* structure instead of swapping one picture for another. */}
       <span className="dress dress-timber" />

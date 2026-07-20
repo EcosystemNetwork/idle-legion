@@ -1,0 +1,131 @@
+/* Four-destination navigation. See NavBar.tsx. */
+
+@import "./tokens.css";
+
+.navbar {
+  display: flex;
+  z-index: var(--z-nav);
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-weight: var(--w-bold);
+  transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+.nav-item:hover:not(.locked) { color: var(--fg); background: var(--surface-hover); }
+.nav-item.active { color: var(--accent); }
+.nav-item.locked { opacity: 0.4; cursor: default; }
+.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.nav-icon { font-size: var(--t-xl); line-height: 1; }
+.nav-label { font-size: var(--t-xs); letter-spacing: 0.04em; }
+
+.nav-pip {
+  position: absolute;
+  min-width: 8px;
+  height: 8px;
+  padding: 0 3px;
+  border-radius: var(--r-pill);
+  font-size: 9px;
+  font-weight: var(--w-black);
+  font-style: normal;
+  line-height: 8px;
+  color: #0c0714;
+  text-align: center;
+}
+/* Green = there is something to claim. Violet = something merely changed.
+   The old bar used two indistinguishable dot styles for both meanings. */
+.nav-pip.attention { background: var(--ok); box-shadow: var(--glow-ready); }
+.nav-pip.info { background: var(--accent-2); box-shadow: var(--glow-violet); }
+
+/* ------------------------------------------------- desktop: vertical rail */
+
+@media (min-width: 861px) {
+  .navbar {
+    position: fixed;
+    left: 0;
+    top: var(--hud-h);
+    bottom: 0;
+    width: var(--rail-w);
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--s-2);
+    padding: var(--s-5) var(--s-2);
+    background: linear-gradient(90deg, rgba(10, 7, 18, 0.96), rgba(10, 7, 18, 0.78));
+    backdrop-filter: blur(10px);
+    border-right: 1px solid var(--line);
+  }
+  .nav-item {
+    flex-direction: column;
+    gap: var(--s-1);
+    padding: var(--s-3) var(--s-2);
+    border-radius: var(--r-md);
+    min-height: 62px;
+  }
+  /* The active rail item gets a gold spine rather than a filled block — a solid
+     fill at this size fights the world for attention. */
+  .nav-item.active {
+    background: rgba(255, 194, 51, 0.1);
+    border-color: var(--line-gold);
+  }
+  .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 20%;
+    bottom: 20%;
+    width: 3px;
+    border-radius: var(--r-pill);
+    background: var(--accent);
+    box-shadow: var(--glow-gold);
+  }
+  .nav-pip { top: 6px; right: 14px; }
+}
+
+/* --------------------------------------------------- mobile: bottom bar */
+
+@media (max-width: 860px) {
+  .navbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: linear-gradient(180deg, rgba(10, 7, 18, 0.9), rgba(8, 5, 14, 0.99));
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -6px 20px -8px rgba(0, 0, 0, 0.9);
+  }
+  .nav-item {
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--s-2) var(--s-1);
+    min-width: 0;
+  }
+  .nav-item.active { background: none; }
+  .nav-item.active::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 22%;
+    right: 22%;
+    height: 3px;
+    border-radius: 0 0 var(--r-pill) var(--r-pill);
+    background: var(--accent);
+    box-shadow: var(--glow-gold);
+  }
+  .nav-icon { font-size: var(--t-lg); }
+  .nav-label { font-size: 10px; }
+  .nav-pip { top: 6px; right: 50%; margin-right: -20px; }
+}

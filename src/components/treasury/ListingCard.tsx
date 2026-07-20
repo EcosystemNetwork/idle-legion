@@ -19,12 +19,15 @@ export default function ListingCard({
   listing,
   facts,
   canBuy,
+  ctaLabel,
   disabledReason,
   onBuy,
 }: {
   listing: OnchainListing;
   facts: ListingFacts;
   canBuy: boolean;
+  /** Verb on the button — "Review", or "Sign in to buy" when signed out. */
+  ctaLabel: string;
   disabledReason: string;
   onBuy: () => void;
 }) {
@@ -34,25 +37,25 @@ export default function ListingCard({
   const headline = facts.changes[0];
 
   return (
-    <article className="stall" style={{ ["--rar" as string]: rm.color }}>
-      <div className="stall-art">
+    <article className="bz-card" style={{ ["--rar" as string]: rm.color }}>
+      <div className="bz-art">
         <img src={listing.thumb ?? listing.img} alt={listing.label} loading="lazy" />
-        <span className="stall-rar" title={`${rm.name} — ${rm.stars} of 5`}>
+        <span className="bz-rar" title={`${rm.name} — ${rm.stars} of 5`}>
           {stars(rm.stars)}
         </span>
-        <span className="stall-cat" style={{ ["--cat" as string]: cat.accent }} title={cat.note}>
+        <span className="bz-cat" style={{ ["--cat" as string]: cat.accent }} title={cat.note}>
           {cat.icon} {cat.label}
         </span>
       </div>
 
-      <div className="stall-body">
-        <h4 className="stall-name" title={listing.label}>
+      <div className="bz-body">
+        <h4 className="bz-name" title={listing.label}>
           {listing.label}
         </h4>
-        <p className="stall-utility">{facts.utility}</p>
+        <p className="bz-utility">{facts.utility}</p>
 
         {headline && (
-          <div className="stall-prevu" aria-label="before and after">
+          <div className="bz-prev" aria-label="before and after">
             <span className="pv-label">{headline.label}</span>
             <span className="pv-vals">
               <b className="was">{headline.before}</b>
@@ -70,7 +73,7 @@ export default function ListingCard({
           </div>
         )}
 
-        <div className="stall-tags">
+        <div className="bz-tags">
           <span className="tag rar" style={{ color: rm.color }}>
             {rm.name}
           </span>
@@ -79,16 +82,16 @@ export default function ListingCard({
           </span>
         </div>
 
-        <p className="stall-why">
+        <p className="bz-why">
           <span className="why-cap">Why now</span> {facts.why}
         </p>
-        <p className="stall-free">
+        <p className="bz-free">
           <span className="free-cap">Free path</span> {facts.freePath}
         </p>
       </div>
 
-      <div className="stall-foot">
-        <div className="stall-price">
+      <div className="bz-foot">
+        <div className="bz-price">
           <b>{usd(facts.totalUsd)}</b>
           <small>
             {usd(listing.priceUsd)} + {usd(facts.feeUsd)} fee
@@ -101,7 +104,7 @@ export default function ListingCard({
           title={canBuy ? "See exactly what you spend and receive" : disabledReason}
           onClick={onBuy}
         >
-          Review
+          {ctaLabel}
         </button>
       </div>
     </article>

@@ -4,7 +4,7 @@
 // existing 2D building-icon art, and lit to match the game's dark-vibrant look.
 //
 // What lives here:
-//   • a cavern plaza floor (tiled floor texture)
+//   • a cavern plaza floor (procedural flagstone texture, drawn on a canvas)
 //   • six interactive buildings on a ring, each entering a game view on click
 //   • a rotating crystal monument + flickering torches + drifting dust motes
 //   • a small pool of animated kek dwellers wandering the plaza
@@ -40,7 +40,7 @@ export const BUILDINGS: BuildingDef[] = [
   { id: "arena", name: "Colosseum", sub: "fight world bosses", icon: KIT.bld.colosseum, accent: 0xffc24d, base: 0x3a3326 },
   { id: "raids", name: "War Room", sub: "raid the Wastes", icon: KIT.bld.hunt, accent: 0x6bd36b, base: 0x243026 },
   { id: "stronghold", name: "Deep Works", sub: "mine · forge · granary", icon: KIT.bld.mine, accent: 0x5aa8ff, base: 0x232a3a },
-  { id: "market", name: "Bazaar", sub: "trade on-chain", icon: KIT.bld.treasury, accent: 0x3ad6c8, base: 0x223330 },
+  { id: "treasury", name: "Treasury", sub: "trade, bank & land", icon: KIT.bld.treasury, accent: 0x3ad6c8, base: 0x223330 },
   { id: "codex", name: "Grand Hall", sub: "the Master", icon: KIT.bld.throne, accent: 0xb98bff, base: 0x2c2640 },
 ];
 
@@ -156,7 +156,7 @@ export function buildKingdom(
       vertexColors: true,
       // The plaza sits under a bright key; knocked back so the ground stays
       // ground and the buildings and crystal keep the eye.
-      color: 0x8d86a0,
+      color: 0x9f98b4,
       roughness: 0.92,
       metalness: 0.04,
     }),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IAsset } from "@particle-network/universal-account-sdk";
 import {
   connectInjectedWallet,
@@ -21,6 +21,10 @@ export function useWallet() {
   const [totalUsd, setTotalUsd] = useState<number | null>(null);
   const [assets, setAssets] = useState<IAsset[]>([]);
   const [uaAddress, setUaAddress] = useState<string | null>(null);
+  // `error` is React state, so it is still stale in the same tick a call fails —
+  // the Treasury's transaction sheet needs the message *synchronously* to tell a
+  // user rejection apart from a genuine failure. The ref is the truth source.
+  const errorRef = useRef<string | null>(null);
   const [lastTx, setLastTx] = useState<{
     id: string;
     amount: string;
@@ -64,11 +68,14 @@ export function useWallet() {
 
   const run = async <T,>(fn: () => Promise<T>): Promise<T | null> => {
     setBusy(true);
+    errorRef.current = null;
     setError(null);
     try {
       return await fn();
     } catch (e) {
-      setError((e as Error).message);
+      const msg = (e as Error).message;
+      errorRef.current = msg;
+      setError(msg);
       return null;
     } finally {
       setBusy(false);
@@ -133,6 +140,8 @@ export function useWallet() {
     uaAddress,
     lastTx,
     caps,
+    /** Synchronous read of the most recent failure, for transaction flows. */
+    readError: () => errorRef.current,
     loginMagic,
     loginInjected,
     logout,

@@ -1,0 +1,145 @@
+/* The permanent HUD. See Hud.tsx. */
+
+@import "./tokens.css";
+
+.hud {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-hud);
+  /* Glass rather than a solid plate: the kingdom keeps showing through, which
+     is the whole point of making the world the primary surface. */
+  background: linear-gradient(180deg, rgba(10, 7, 18, 0.96), rgba(10, 7, 18, 0.82));
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.9);
+}
+
+.hud-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s-3) var(--s-5);
+  min-height: var(--hud-h);
+}
+
+/* ------------------------------------------------------- the three stats */
+
+.hud-res {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 1;
+  min-width: 0;
+}
+/* Gold is the headline number and gets the extra weight; the other two are
+   supporting. Equal-weight chips were why nothing read as important. */
+.hud-res > .ui-stat:first-child .ui-stat-value { font-size: var(--t-xl); }
+
+.hud-actions { display: flex; align-items: center; gap: var(--s-3); flex: none; }
+
+.hud-collect { opacity: 0.45; transition: opacity var(--dur-2) var(--ease); }
+.hud-collect.ready {
+  opacity: 1;
+  box-shadow: 0 3px 0 #8a5c10, var(--glow-gold);
+  animation: hud-ready 1.8s var(--ease) infinite;
+}
+@keyframes hud-ready {
+  0%, 100% { box-shadow: 0 3px 0 #8a5c10, 0 0 14px -6px rgba(255, 194, 51, 0.8); }
+  50% { box-shadow: 0 3px 0 #8a5c10, 0 0 26px -4px rgba(255, 194, 51, 0.95); }
+}
+@media (prefers-reduced-motion: reduce) { .hud-collect.ready { animation: none; } }
+
+/* ------------------------------------------------------ treasury toggle */
+
+.hud-treasury {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-4);
+  min-height: 34px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-sunken);
+  color: var(--fg-muted);
+  font-size: var(--t-sm);
+  font-weight: var(--w-bold);
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.hud-treasury:hover,
+.hud-treasury.open { color: var(--accent); border-color: var(--line-gold); }
+.ht-icon { font-size: var(--t-md); }
+.ht-caret { font-size: var(--t-2xs); opacity: 0.8; }
+.ht-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: var(--glow-ready);
+}
+
+/* ----------------------------------------------------------- the drawer */
+
+.hud-drawer {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s-4) var(--s-5) var(--s-5);
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  animation: hud-expand var(--dur-2) var(--ease);
+}
+@keyframes hud-expand { from { opacity: 0; transform: translateY(-6px); } }
+
+.hd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--s-2);
+}
+/* Inside the drawer the stats get their own plate — they're a list now, not a
+   bar, and need the separation the HUD's spacing was providing. */
+.hd-grid > .ui-stat {
+  background: var(--surface-sunken);
+  border-color: var(--line);
+  padding: var(--s-3);
+}
+
+.hd-wallet {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px dashed var(--line);
+}
+.hd-wallet > .ui-stat { flex: 1; min-width: 0; }
+
+/* --------------------------------------------------------------- mobile */
+
+@media (max-width: 620px) {
+  .hud-bar { padding: var(--s-2) var(--s-3); gap: var(--s-2); }
+  .hud-res { gap: 0; }
+  .hud-res > .ui-stat { padding: var(--s-1) var(--s-2); gap: var(--s-2); }
+  /* The icon plate is the first thing to go — the label and number carry the
+     meaning and 390px has no room for decoration. */
+  .hud-res .ui-stat-icon { width: 22px; height: 22px; font-size: var(--t-sm); }
+  .hud-res .ui-stat-value { font-size: var(--t-md); }
+  .hud-res > .ui-stat:first-child .ui-stat-value { font-size: var(--t-lg); }
+  .hud-res .ui-stat-label { font-size: 9px; letter-spacing: 0.05em; }
+  .hud-res .ui-stat-sub { font-size: 10px; }
+  .ht-label { display: none; }
+  .hud-treasury { padding: var(--s-2); }
+  .hud-drawer { padding: var(--s-3); }
+  .hd-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Very narrow: drop the per-second sublines rather than let the row wrap. */
+@media (max-width: 380px) {
+  .hud-res .ui-stat-sub { display: none; }
+}

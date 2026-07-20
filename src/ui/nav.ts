@@ -15,9 +15,7 @@ export type Tab =
   | "raids"
   | "worldboss"
   | "duels"
-  | "exchange"
-  | "realm"
-  | "market"
+  | "treasury"
   | "codex"
   | "operator";
 
@@ -65,10 +63,12 @@ export const SECTIONS: SectionDef[] = [
     id: "treasury",
     label: "Treasury",
     icon: "🪙",
+    // The Treasury is itself a multi-room surface (vaults, bazaar, exchange,
+    // estates, ledger) with its own internal navigation — see
+    // components/treasury/Treasury.tsx. It appears here as one destination so
+    // the main nav stays at four.
     tabs: [
-      { id: "market", label: "Bazaar", icon: "🏛️", blurb: "Trade heroes and gear on-chain" },
-      { id: "exchange", label: "Exchange", icon: "💱", blurb: "Swap and stake $LEGION" },
-      { id: "realm", label: "Land", icon: "🗺️", blurb: "Claim territory that pays rent" },
+      { id: "treasury", label: "Treasury", icon: "🏛️", blurb: "Vaults, bazaar, estates and ledger" },
       { id: "operator", label: "Operator", icon: "🔮", blurb: "Missions only the Mirror shows" },
     ],
   },

@@ -1,0 +1,163 @@
+/* The app shell: how the HUD, the nav, the world and the sheets share the page.
+   Loaded after App.css so it wins on the handful of legacy rules it replaces. */
+
+@import "./tokens.css";
+
+/* ---------------------------------------------------------------- layout */
+
+/* The old shell was a 1160px centred column with the world as one item in a
+   vertical stack. The world is now the page: full-bleed, with the HUD as a
+   sticky band on top and the nav as a rail beside it. */
+.app {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  width: 100%;
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s-4) var(--s-5) var(--s-8);
+}
+
+/* Desktop: leave room for the fixed rail. */
+@media (min-width: 861px) {
+  .app { padding-left: var(--rail-w); }
+  .app-stage { padding: var(--s-5) var(--s-7) var(--s-8); }
+}
+
+/* Mobile: leave room for the fixed bottom bar. */
+@media (max-width: 860px) {
+  .app-stage {
+    padding: var(--s-3) var(--s-3);
+    padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + var(--s-5));
+  }
+}
+
+/* ----------------------------------------------------------- the world */
+
+/* The world takes the room the HUD used to. It is the largest thing on screen
+   at every breakpoint — that is the success criterion, so it's enforced with a
+   min-height rather than left to content. */
+.app-stage .game-world {
+  flex: 1;
+  height: auto;
+  min-height: min(62vh, 620px);
+  border-radius: var(--r-xl);
+  border-width: 2px;
+}
+
+@media (max-width: 860px) {
+  .app-stage .game-world {
+    /* Deliberately taller than the objective card + HUD combined. */
+    min-height: min(58dvh, 460px);
+    border-radius: var(--r-lg);
+  }
+}
+
+/* The 3D scene's own title plate sits under the DOM hotspots and shouldn't
+   compete with them; ease it back now that the map carries real labels. */
+.gw-head { opacity: 0.72; }
+.gw-head h2 { font-size: var(--t-xl); }
+@media (max-width: 620px) {
+  .gw-head { display: none; }
+}
+
+/* Replaces the old floating hover chip — the markers say what things are now,
+   so this only has to teach the interaction once. */
+.gw-hint-bar {
+  position: absolute;
+  left: 50%;
+  bottom: var(--s-3);
+  transform: translateX(-50%);
+  z-index: var(--z-world-overlay);
+  padding: var(--s-1) var(--s-4);
+  border-radius: var(--r-pill);
+  background: rgba(8, 6, 14, 0.7);
+  border: 1px solid var(--line);
+  color: var(--fg-faint);
+  font-size: var(--t-xs);
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(3px);
+}
+@media (max-width: 620px) { .gw-hint-bar { font-size: var(--t-2xs); } }
+
+/* --------------------------------------------------------- legacy views */
+
+/* Views written for a full-width page now render inside a Sheet. Strip the
+   outer chrome they brought with them so they don't double-frame. */
+.ui-sheet-body > .panel,
+.ui-sheet-body > .vault {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* Banners keep working, but as page-level alerts above the world. */
+.app > .banner {
+  max-width: var(--shell-max);
+  width: 100%;
+  margin: var(--s-3) auto 0;
+  border-radius: var(--r-md);
+}
+@media (min-width: 861px) {
+  .app > .banner { padding-left: var(--s-5); padding-right: var(--s-5); }
+}
+@media (max-width: 860px) {
+  .app > .banner { margin: var(--s-2) var(--s-3) 0; width: auto; }
+}
+
+/* -------------------------------------------------------------- footer */
+
+/* The footer is legal/credits chrome, not gameplay. It sits below the fold and
+   stops competing with the world for weight. */
+.foot {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--s-5);
+  opacity: 0.55;
+  font-size: var(--t-xs);
+  transition: opacity var(--dur-2) var(--ease);
+}
+.foot:hover { opacity: 1; }
+@media (min-width: 861px) { .foot { padding-left: var(--s-7); } }
+@media (max-width: 860px) {
+  .foot { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + var(--s-5)); }
+}
+
+/* Keep the dev affordances clear of the mobile nav bar — the mute button and
+   the admin FAB both used fixed bottom offsets that now sit under it. */
+@media (max-width: 860px) {
+  .admin-fab,
+  .fx-mute {
+    bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + var(--s-3));
+  }
+}
+
+/* ------------------------------------------------------------ modals */
+
+/* The legacy modals were desktop dialogs shown unchanged on phones. Give them
+   the same bottom-sheet treatment the new surfaces use. */
+@media (max-width: 620px) {
+  .modal-backdrop { align-items: flex-end; padding: 0; }
+  .modal {
+    width: 100%;
+    max-width: none;
+    max-height: 92dvh;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    padding-bottom: calc(var(--s-5) + env(safe-area-inset-bottom, 0px));
+  }
+}
