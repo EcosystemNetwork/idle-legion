@@ -69,11 +69,22 @@ export interface Equipped {
   mount: string | null;
 }
 
+/**
+ * Gladiators and captured beasts share ONE roster. A beast is a fighter that
+ * can't equip gear — which means XP, stamina, class-countering, wounds and the
+ * arena all apply to it unchanged, for free.
+ */
+export type FighterKind = "gladiator" | "beast";
+
 export interface Dweller {
   id: string;
   tier: Tier;
   name: string;
   aptitude: Aptitude;
+  /** Absent = "gladiator" (every pre-existing save). */
+  kind?: FighterKind;
+  /** Beasts only — drives how much floor space housing one costs. */
+  rarity?: Rarity;
   level: number;
   xp: number;
   hp: number; // current health; 0 = downed (see `downed`)
@@ -87,6 +98,19 @@ export interface Dweller {
   genome?: Genome; // dominant + recessive genes passed to children
   roomId: string | null; // assigned room, or null = idle in the Hall
   equipped: Equipped;
+}
+
+/**
+ * An owned prop instance — the movable, stat-bearing furniture of a chamber.
+ * Definitions and all placement rules live in `rooms.ts`; this lives here so
+ * `GameState` can hold them without a module cycle (cf. `OnchainListing`).
+ */
+export interface PropItem {
+  id: string; // unique instance id
+  defId: string; // -> PropDef in rooms.ts
+  roomId: string | null; // null = in storage, not placed
+  /** Won on-chain or from the Colosseum → survives a Descend. */
+  onchain?: boolean;
 }
 
 /** Room types dug into the mountain. */
@@ -368,7 +392,8 @@ export interface GameState {
   worldBoss: WorldBossState;
   pvp: PvpState;
   rooms: Room[];
-  dwellers: Dweller[];
+  dwellers: Dweller[]; // gladiators AND captured beasts (see FighterKind)
+  props: PropItem[]; // every owned prop; `roomId: null` = in storage
   market: MarketOffer[]; // slave-market stock at the gate
   gear: GearItem[]; // all owned gear instances (equipped + inventory)
   lunchboxes: number; // unopened loot crates

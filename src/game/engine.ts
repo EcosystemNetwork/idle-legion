@@ -117,11 +117,23 @@ import type {
   Rarity,
   Room,
   RoomType,
+  PropItem,
   Tier,
   WorldBossReward,
   WorldBossRival,
   WorldBossState,
 } from "./types";
+import {
+  canHouseBeast,
+  canPlaceProp,
+  NO_BONUSES,
+  occupancyFrom,
+  PROP_BY_ID,
+  roomBonuses,
+  tierForLevel,
+  type RoomBonuses,
+  type RoomOccupancy,
+} from "./rooms";
 
 let idCounter = 0;
 function uid(prefix: string): string {
@@ -242,6 +254,7 @@ export function createInitialState(now = Date.now()): GameState {
     },
     rooms: [quarters, hall, mine, warchest],
     dwellers,
+    props: [], // chambers start bare — every prop is earned or bought
     market: rollMarket(),
     gear: [],
     lunchboxes: 2, // starter crates to try the gacha
@@ -361,12 +374,27 @@ export function isOnRaid(state: GameState, id: string): boolean {
   return state.activeRaid?.squad.includes(id) ?? false;
 }
 
-export function roomCapacity(room: Room): number {
-  return ROOMS[room.type].capacityPerLevel * room.level;
+/** What's currently standing on a room's floor. Derived — never stored twice. */
+export function roomOccupancy(state: GameState, room: Room): RoomOccupancy {
+  return occupancyFrom(room.id, state.props ?? [], state.dwellers.filter((d) => d.kind === "beast"));
 }
 
-export function roomStoreCap(room: Room): number {
-  return ROOMS[room.type].storePerLevel * room.level;
+/** Aggregate prop bonuses for a room (identity multipliers when nothing is placed). */
+export function roomPropBonuses(state: GameState, room: Room): RoomBonuses {
+  if (!state.props?.length) return NO_BONUSES;
+  return roomBonuses(room.type, roomOccupancy(state, room));
+}
+
+export function roomCapacity(room: Room, state?: GameState): number {
+  const base = ROOMS[room.type].capacityPerLevel * room.level;
+  if (!state) return base;
+  return base + roomPropBonuses(state, room).capacity;
+}
+
+export function roomStoreCap(room: Room, state?: GameState): number {
+  const base = ROOMS[room.type].storePerLevel * room.level;
+  if (!state) return base;
+  return Math.floor(base * roomPropBonuses(state, room).storeMult);
 }
 
 /** Great Hall housing: base 3 + 3 per hall level. Lvl1 → 6. */
@@ -490,6 +518,9 @@ export function roomRate(state: GameState, room: Room, fed: boolean): number {
     rate += o;
   }
   rate *= 1 + globalBoost(state);
+  // Whatever the player dragged in here — anvil, still, ichor tap — applies last,
+  // so an off-theme prop's halved contribution isn't compounded by other boosts.
+  rate *= roomPropBonuses(state, room).produceMult;
   // Starving hurts mining & forging, but NOT hunting/healing (so the legion can recover).
   if (!fed && def.produces !== "provisions" && def.produces !== "salves") rate *= STARVING_PENALTY;
   return rate;
@@ -986,6 +1017,86 @@ export function upgradeCost(room: Room): number {
   return Math.floor(base * Math.pow(1.6, room.level));
 }
 
+// ---------- props: earning, placing, moving ----------------------------------
+
+/** Award a prop (arena purse, raid haul, Colosseum prize). Lands in storage. */
+export function grantProp(state: GameState, defId: string, onchain = false): GameState {
+  if (!PROP_BY_ID[defId]) throw new Error("No such prop.");
+  const item: PropItem = { id: uid("prop"), defId, roomId: null };
+  if (onchain) item.onchain = true;
+  return { ...state, props: [...state.props, item] };
+}
+
+/**
+ * Put a prop on a room's floor. Refuses only on space — off-theme placement is
+ * deliberately legal (it just runs at OFF_THEME_MULT), because "the anvil goes
+ * where I want it" is the whole appeal.
+ */
+export function placeProp(state: GameState, propId: string, roomId: string): GameState {
+  const item = state.props.find((p) => p.id === propId);
+  if (!item) throw new Error("No such prop.");
+  const room = roomById(state, roomId);
+  if (!room) throw new Error("No such room.");
+  if (item.roomId === roomId) return state;
+
+  // Measure against occupancy WITHOUT this prop, so re-homing a prop that's
+  // already in the room it's moving out of doesn't count itself twice.
+  const occ = roomOccupancy(state, room);
+  const without = { ...occ, props: occ.props.filter((p) => p.id !== propId) };
+  const check = canPlaceProp(item.defId, room.type, without, tierForLevel(room.level));
+  if (!check.ok) {
+    if (check.reason === "no-space") {
+      const def = PROP_BY_ID[item.defId];
+      throw new Error(
+        `No floor space — ${def.name} needs ${check.needed}, ${check.free} free. Move something out.`,
+      );
+    }
+    throw new Error("That can't go there.");
+  }
+  return {
+    ...state,
+    props: state.props.map((p) => (p.id === propId ? { ...p, roomId } : p)),
+  };
+}
+
+/** Pull a prop off the floor and back into storage. Always allowed. */
+export function storeProp(state: GameState, propId: string): GameState {
+  if (!state.props.some((p) => p.id === propId)) throw new Error("No such prop.");
+  return {
+    ...state,
+    props: state.props.map((p) => (p.id === propId ? { ...p, roomId: null } : p)),
+  };
+}
+
+/**
+ * Stable a captured beast in a room. Beasts cost 6-10 floor space, so this is
+ * the call that most often fails — `evictionPlan` is what the UI should offer
+ * when it does.
+ */
+export function houseBeast(state: GameState, beastId: string, roomId: string): GameState {
+  const beast = dwellerById(state, beastId);
+  if (!beast || beast.kind !== "beast") throw new Error("Not a beast.");
+  const room = roomById(state, roomId);
+  if (!room) throw new Error("No such room.");
+  if (beast.roomId === roomId) return state;
+
+  const occ = roomOccupancy(state, room);
+  const without = { ...occ, beasts: [...occ.beasts] };
+  const idx = without.beasts.indexOf(beast.rarity ?? "common");
+  if (beast.roomId === roomId && idx >= 0) without.beasts.splice(idx, 1);
+
+  const check = canHouseBeast(beast.rarity ?? "common", without, tierForLevel(room.level));
+  if (!check.ok) {
+    throw new Error(
+      `${beast.name} needs ${check.needed} floor space, only ${check.free} free. Clear the room or dig deeper.`,
+    );
+  }
+  return {
+    ...state,
+    dwellers: state.dwellers.map((d) => (d.id === beastId ? { ...d, roomId } : d)),
+  };
+}
+
 export function upgradeRoom(state: GameState, roomId: string): GameState {
   const room = roomById(state, roomId);
   if (!room) throw new Error("No such room.");
@@ -1059,6 +1170,15 @@ export function autoStaff(state: GameState, roomId: string): GameState {
     if (idle.length === 0) break;
     next = assignDweller(next, idle[0].id, roomId);
     cur = roomById(next, roomId)!;
+  }
+  // Already full, or nobody free to send: both are routine, and both used to
+  // return the untouched state — a click with no re-render and no message.
+  if (next === state) {
+    throw new Error(
+      room.workers.length >= cap
+        ? `${ROOMS[room.type].name} is already fully staffed.`
+        : "No idle gladiators — recruit, recall from another chamber, or heal the downed.",
+    );
   }
   return next;
 }
@@ -1215,6 +1335,17 @@ export function healAll(state: GameState): GameState {
   for (const d of queue) {
     if (next.salves < healSalveCost(d)) continue;
     next = healDweller(next, d.id);
+  }
+  // A full revive costs 1200 salves against a 30-salve starting stock, so
+  // "couldn't afford a single one" is the common case, not an edge case. Say so
+  // instead of returning the same state and looking like a dead button.
+  if (next === state) {
+    const cheapest = queue[0];
+    throw new Error(
+      cheapest
+        ? `Not enough salves — the cheapest mend needs ${healSalveCost(cheapest)}. Staff the Infirmary.`
+        : "Nobody is wounded.",
+    );
   }
   return next;
 }
@@ -2727,6 +2858,18 @@ export function loadState(): GameState {
         ? parsed.objectives.map((o) => ({ ...o, tier: typeof o.tier === "number" ? o.tier : 1 }))
         : base.objectives,
       gear: Array.isArray(parsed.gear) ? parsed.gear : base.gear,
+      // Props predate nothing yet, but drop any whose room is gone (demolished
+      // or lost to a Descend) back into storage rather than stranding them in a
+      // room id that no longer resolves.
+      props: Array.isArray(parsed.props)
+        ? parsed.props
+            .filter((p) => p && typeof p.id === "string" && typeof p.defId === "string")
+            .map((p) => ({
+              ...p,
+              roomId:
+                p.roomId && parsed.rooms.some((r) => r.id === p.roomId) ? p.roomId : null,
+            }))
+        : base.props,
       warChest: parsed.warChest ?? base.warChest,
       daily: parsed.daily ?? base.daily,
       // New economy substructures. These are sanitised FIELD BY FIELD, not just

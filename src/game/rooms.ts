@@ -14,7 +14,9 @@
 // This module is deliberately free of engine/UI imports: it is pure data plus
 // pure functions over that data, so it can be unit-tested and reasoned about
 // without booting a game state.
-import type { Rarity, RoomType } from "./types";
+// `PropItem` lives in types.ts (like OnchainListing) so GameState can reference
+// an owned prop without types.ts having to import this module back.
+import type { PropItem, Rarity, RoomType } from "./types";
 
 // BASE_URL keeps paths correct under the GitHub Pages /idle-legion/ prefix.
 const B = import.meta.env.BASE_URL;
@@ -44,6 +46,30 @@ export const ROOM_TIERS: Record<RoomTier, RoomTierDef> = {
 };
 
 export const floorSpaceFor = (tier: RoomTier): number => ROOM_TIERS[tier].floorSpace;
+
+/**
+ * Tier is DERIVED from room level rather than being a second upgrade track.
+ * Levelling already has costs, rush timers and UI; bolting a parallel ladder
+ * onto it would mean two things to grind for one visible outcome. Hitting a
+ * threshold is the moment the chamber visibly grows.
+ */
+export const TIER_MIN_LEVEL: Record<RoomTier, number> = { 1: 1, 2: 3, 3: 6, 4: 10, 5: 15 };
+
+export function tierForLevel(level: number): RoomTier {
+  if (level >= TIER_MIN_LEVEL[5]) return 5;
+  if (level >= TIER_MIN_LEVEL[4]) return 4;
+  if (level >= TIER_MIN_LEVEL[3]) return 3;
+  if (level >= TIER_MIN_LEVEL[2]) return 2;
+  return 1;
+}
+
+/** Levels remaining until the next tier, or null if already Mythic. */
+export function levelsToNextTier(level: number): { next: RoomTier; levels: number } | null {
+  const tier = tierForLevel(level);
+  if (tier >= MAX_ROOM_TIER) return null;
+  const next = (tier + 1) as RoomTier;
+  return { next, levels: TIER_MIN_LEVEL[next] - level };
+}
 
 /**
  * Art for a chamber. Tiers 1-4 share three reusable "shell" plates — a raw hole
@@ -192,15 +218,6 @@ export const PROP_BY_ID: Record<string, PropDef> = Object.fromEntries(
   PROP_CATALOG.map((p) => [p.id, p]),
 );
 
-/** An owned prop instance. Movable — `roomId: null` means it's in storage. */
-export interface PropItem {
-  id: string; // unique instance id
-  defId: string; // -> PropDef
-  roomId: string | null;
-  /** Won on-chain or from the Colosseum → survives a Descend. */
-  onchain?: boolean;
-}
-
 // ---------- beasts -----------------------------------------------------------
 
 /**
@@ -229,6 +246,23 @@ export interface RoomOccupancy {
 }
 
 export const EMPTY_OCCUPANCY: RoomOccupancy = { props: [], beasts: [] };
+
+/**
+ * Occupancy is DERIVED, never stored — props and beasts each already know the
+ * room they're in, so there is no second copy of the truth to keep in sync.
+ * The beast argument is structurally typed so this module needn't know about
+ * `Dweller`.
+ */
+export function occupancyFrom(
+  roomId: string,
+  props: PropItem[],
+  beasts: { roomId: string | null; rarity?: Rarity }[],
+): RoomOccupancy {
+  return {
+    props: props.filter((p) => p.roomId === roomId),
+    beasts: beasts.filter((b) => b.roomId === roomId).map((b) => b.rarity ?? "common"),
+  };
+}
 
 /** Floor space currently spent in a room. */
 export function usedSpace(occ: RoomOccupancy): number {
