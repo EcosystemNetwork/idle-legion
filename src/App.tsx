@@ -118,7 +118,7 @@ import {
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { CombatClass, Dweller, GameState, GearItem, GearSlot, LandKind, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
+import type { CombatClass, Dweller, GameState, Gene, GearItem, GearSlot, LandKind, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
 import {
   claimMirror,
   completeMission,
@@ -166,13 +166,21 @@ type Wallet = ReturnType<typeof useWallet>;
 
 // Real clip names in kekius-boss.glb: Idle, Spin, Taunt, Dance, Arise, Attack,
 // Walk, Dead, Run, ComboAttack. Pick a work-flavored loop per room.
-const FROG_WORK_ANIM: Record<string, string> = {
-  mine: "Attack",
-  forge: "ComboAttack",
-  granary: "Walk",
-  infirmary: "Idle",
-  warroom: "Taunt",
+// What the room's 3D dweller does: a looping work clip plus one-shot breaks it
+// drops into every few seconds. Between them these cover every clip in the frog
+// GLB — Idle, Walk, Run, Attack, ComboAttack, Spin, Taunt, Dance, Arise, Dead.
+const FROG_WORK_ANIM: Record<string, { anim: string; breaks: string[] }> = {
+  mine: { anim: "Attack", breaks: ["Spin", "Idle"] },
+  forge: { anim: "ComboAttack", breaks: ["Attack", "Taunt"] },
+  granary: { anim: "Walk", breaks: ["Run", "Idle"] },
+  infirmary: { anim: "Idle", breaks: ["Arise", "Dance"] },
+  warroom: { anim: "Taunt", breaks: ["ComboAttack", "Run"] },
+  portal: { anim: "Spin", breaks: ["Arise", "Dance"] },
 };
+const FROG_ANIM_FALLBACK = { anim: "Idle", breaks: ["Taunt", "Dance", "Spin"] };
+// A room with an incapacitated worker plays it straight: down, then struggling
+// back up. `Dead` and `Arise` only ever show up here.
+const FROG_ANIM_DOWNED = { anim: "Dead", breaks: ["Arise"] };
 
 const RESOURCE_IMG: Record<string, string> = {
   gold: IMG.gold,
@@ -277,11 +285,15 @@ function ModelBoss({ src }: { src: string }) {
       poster={ROOM_ART.quarters} // 2D art until the model lands (or if WebGL is off)
       title="Kekius Maximus — the Master"
       anim="Idle"
+      breaks={["Taunt", "Dance", "ComboAttack"]}
       spin={18}
       fov={30}
       zoom={1.85}
       aim={0.55}
-      style={{ width: "100%", height: "100%" }}
+      // Fixed pixel box, like the room frogs. Percentage sizing inside the
+      // absolutely-positioned .ch-model measured as an unstable rect, and the
+      // Master never drew.
+      style={{ width: 340, height: 360 }}
     />
   );
 }
@@ -1421,6 +1433,9 @@ function Chamber({
   const fill = storeCap > 0 ? Math.min(1, storedRaw / storeCap) : 0;
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const incident = state.incident?.roomId === room.id ? state.incident : null;
+  const frogAnim = workers.some((d) => d.downed)
+    ? FROG_ANIM_DOWNED
+    : (FROG_WORK_ANIM[room.type] ?? FROG_ANIM_FALLBACK);
   const upCost = upgradeCost(room);
   const resImg = def.produces ? RESOURCE_IMG[def.produces] : null;
   const resting =
@@ -1483,7 +1498,7 @@ function Chamber({
         <div className="ch-stage">
           {workers.length > 0 && (
             <div className="ch-worker">
-              <RoomFrog anim={FROG_WORK_ANIM[room.type] ?? "Attack"} size={130} />
+              <RoomFrog {...frogAnim} size={130} />
             </div>
           )}
           <span className="ch-mood" aria-hidden>
@@ -1882,6 +1897,42 @@ function RaidsView({ state, now, actions }: { state: GameState; now: number; act
 
 // ---------------- hero detail modal (equipment) ----------------
 
+// One expressed/carried trait pair. Dominant is what the hero IS; recessives are
+// carried silently and can surface in children — so they must be visible for
+// gene-sniping to be a real decision rather than a hidden roll.
+function GeneChip({ g, dominant }: { g: Gene; dominant?: boolean }) {
+  return (
+    <span
+      className={`gene-chip ${dominant ? "dom" : ""}`}
+      title={`${APTITUDE_LABEL[g.aptitude]} · ${CLASS_LABEL[g.combatClass]}${dominant ? " (expressed)" : " (carried — can surface in children)"}`}
+    >
+      <b>{APTITUDE_ICON[g.aptitude]}{CLASS_ICON[g.combatClass]}</b>
+      {APTITUDE_LABEL[g.aptitude]}/{CLASS_LABEL[g.combatClass]}
+    </span>
+  );
+}
+
+function GenomePanel({ d }: { d: Dweller }) {
+  if (!d.genome) return null;
+  const rec = d.genome.recessive ?? [];
+  return (
+    <div className="hm-genome">
+      <div className="hm-gen-head">
+        🧬 Genome
+        <span className="muted small">Gen {d.gen ?? 0} · {d.summonsLeft ?? 0} summons left</span>
+      </div>
+      <div className="gene-row">
+        <span className="gene-label">Dominant</span>
+        <GeneChip g={d.genome.dominant} dominant />
+      </div>
+      <div className="gene-row">
+        <span className="gene-label">Carried</span>
+        {rec.length ? rec.map((g, i) => <GeneChip key={i} g={g} />) : <span className="muted small">none</span>}
+      </div>
+    </div>
+  );
+}
+
 function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameState; actions: Actions; onClose: () => void }) {
   const [pickSlot, setPickSlot] = useState<GearSlot | null>(null);
   const r = RARITY[d.tier];
@@ -1940,6 +1991,8 @@ function HeroModal({ d, state, actions, onClose }: { d: Dweller; state: GameStat
             </div>
           </div>
         </div>
+
+        <GenomePanel d={d} />
 
         <div className="hm-vitals">
           <div className="hm-vrow">

@@ -1006,23 +1006,12 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
   position: absolute;
   inset: 0;
   z-index: 2;
-}
-.ch-model model-viewer {
-  width: 100%;
-  height: 100%;
-  --poster-color: transparent;
-}
-.ch-model::before {
-  content: "summoning the Master…";
-  position: absolute;
-  inset: 0;
   display: grid;
   place-items: center;
-  color: rgba(255, 220, 140, 0.5);
-  font-family: var(--font-head);
-  font-size: 13px;
-  letter-spacing: 1px;
-  z-index: -1;
+}
+/* The Master is drawn by the shared portal renderer into this placeholder box. */
+.ch-model > div {
+  max-width: 100%;
 }
 .ch-master {
   position: relative;
@@ -1714,7 +1703,7 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
   position: absolute; left: 0; right: 0; bottom: 0; height: 48%; z-index: 2;
   display: flex; align-items: flex-end; justify-content: center; gap: 12px; padding: 0 24px 3%;
 }
-.rs-floor model-viewer { --poster-color: transparent; background: transparent; }
+.rs-floor > div { background: transparent; }
 
 /* --- live multiplayer badges --- */
 .live-badge { font-size: 11px; font-weight: 800; color: #0b1a0e; background: #5fe38a; padding: 2px 8px; border-radius: 999px; vertical-align: middle; box-shadow: 0 0 10px rgba(95,227,138,0.6); animation: warnpulse 2s ease-in-out infinite; }
@@ -1739,6 +1728,27 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 
 /* room worker 3D frog + happiness face */
 .ch-worker { position: absolute; right: 10px; bottom: 2px; z-index: 2; pointer-events: none; }
-.ch-worker model-viewer { --poster-color: transparent; background: transparent; filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.6)); }
+/* Worker frogs render on the shared portal canvas, so a CSS drop-shadow can't
+   reach them — the in-scene lighting grounds them instead. */
+.ch-worker > div { background: transparent; }
 .ch-mood { position: absolute; top: 8px; right: 12px; z-index: 4; font-size: 22px; filter: drop-shadow(0 2px 3px #000); animation: moodbob 2.2s ease-in-out infinite; }
 @keyframes moodbob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+
+/* flag images (reliable cross-platform, replaces emoji flags) */
+.adm-flag { display: inline-block; height: 11px; width: auto; border-radius: 2px;
+  vertical-align: -1px; box-shadow: 0 0 0 1px rgba(255,255,255,0.12); margin-right: 1px; }
+.adm-flag-x { box-shadow: none; font-size: 11px; }
+
+/* ---------- Hero genome (gene-sniping readout) ---------- */
+.hm-genome { margin: 10px 0; padding: 9px 11px; border-radius: 10px;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+.hm-gen-head { display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.02em; margin-bottom: 6px; }
+.gene-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.gene-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: #8a819c; min-width: 62px; font-weight: 800; }
+.gene-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+  padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12); color: #c7bdd6; }
+.gene-chip b { font-size: 12px; }
+.gene-chip.dom { border-color: var(--gold); color: #ffe6a8; background: rgba(255,194,51,0.12); }
