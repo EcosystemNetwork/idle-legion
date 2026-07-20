@@ -8,6 +8,11 @@ const BossStage = lazy(() => import("./components/BossStage"));
 const GameWorld = lazy(() => import("./components/GameWorld"));
 // Dev/admin "see everything" overlay — code-split so it never ships in the main view.
 const AdminPanel = lazy(() => import("./components/AdminPanel"));
+// The unified Treasury (Bazaar / Exchange / Bank / War Chest / Estates / Ledger).
+// Code-split: it pulls the economy copy and the transaction sheet, and a brand
+// new player doesn't see it until they've earned 5,000 gold.
+const Treasury = lazy(() => import("./components/treasury/Treasury"));
+import type { TreasurySection } from "./components/treasury/Treasury";
 import Actor from "./components/Actor";
 import { INTERIOR } from "./game/interiors";
 import { RoomKek } from "./components/RoomScene";
@@ -160,7 +165,10 @@ function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "worldboss" | "duels" | "exchange" | "realm" | "market" | "codex" | "operator";
+// The Bazaar, Exchange, Bank, War Chest, Estates and Ledger used to be three
+// separate top-level tabs sitting next to each other like unrelated products.
+// They are now rooms inside one destination: `treasury`.
+type Tab = "kingdom" | "stronghold" | "legion" | "arena" | "raids" | "worldboss" | "duels" | "treasury" | "codex" | "operator";
 type Game = ReturnType<typeof useGame>;
 type Actions = Game["actions"];
 type Stats = Game["stats"];
@@ -346,8 +354,9 @@ export default function App() {
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
   const [heroId, setHeroId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Pull | null>(null);
-  const [email, setEmail] = useState("");
   const [admin, setAdmin] = useState(false);
+  /** Which room of the Treasury is open — survives leaving and returning. */
+  const [treasuryRoom, setTreasuryRoom] = useState<TreasurySection>("vaults");
   // Scrying Mirror / Operator state (ownership lives in localStorage via the lib,
   // decoupled from the game save so it survives descents/resets like an account relic).
   const [mirror, setMirror] = useState<MirrorStatus>(() => getCachedMirror());
@@ -355,6 +364,8 @@ export default function App() {
     { status: string; serial?: number | null; remaining?: number; total?: number } | null
   >(null);
   const [mirrorBusy, setMirrorBusy] = useState(false);
+  /** Bumped each time a session token is minted, so token-dependent effects re-run. */
+  const [sessionEpoch, setSessionEpoch] = useState(0);
   const [jackpot, setJackpot] = useState(false);
 
   // Progressive unlocks: the next system to work toward (null once all are open).
@@ -385,9 +396,16 @@ export default function App() {
       // the very first reconcile already carries it. One prompt per ~12h; if the
       // player declines we simply stay on the anonymous device key.
       const { address, signer, email } = wallet.session;
-      void ensureSession(signer, address).finally(() => {
-        syncIdentity({ email: email ?? null, walletAddress: address });
-      });
+      void ensureSession(signer, address)
+        .then((token) => {
+          // Minting is a wallet signature prompt — seconds long. Anything that
+          // needs the token (the cross-device mirror sync below) mounts before
+          // it lands, so publish an epoch those effects can depend on.
+          if (token) setSessionEpoch((n) => n + 1);
+        })
+        .finally(() => {
+          syncIdentity({ email: email ?? null, walletAddress: address });
+        });
     } else {
       identify({ email: null, walletAddress: null });
       clearSession();
@@ -410,6 +428,18 @@ export default function App() {
     }
     setMirrorBusy(true);
     try {
+      // The server only honours an identity the caller has PROVEN, so make sure
+      // we hold a session token before claiming. Normally minted at connect;
+      // this covers the player who declined that prompt and is now claiming.
+      // ensureSession returns null when the player declines the signature or
+      // /auth is unreachable. Claiming anyway posts an empty token, the server
+      // answers `needs_identity`, and the player — whose wallet IS connected —
+      // gets told to connect it, with no hint that a signature is what's missing.
+      const token = await ensureSession(wallet.session?.signer, walletIdentity);
+      if (!token) {
+        setMirrorReveal({ status: "needs_signature" });
+        return;
+      }
       const res = await claimMirror(walletIdentity);
       setMirror(getCachedMirror());
       if (res.status === "claimed") {
@@ -428,13 +458,37 @@ export default function App() {
     } finally {
       setMirrorBusy(false);
     }
-  }, [mirrorBusy, mirror.serial, mirror.soldOut, actions, walletIdentity]);
+  }, [mirrorBusy, mirror.serial, mirror.soldOut, actions, walletIdentity, wallet.session]);
+
+  // Tabs the player was deliberately sent to by an in-game button (the Vault
+  // chip, the Scrying Mirror's "Connect to claim"). Progressive unlocks exist to
+  // pace *discovery*; once the game itself points at a system, hiding it turns
+  // that button into a no-op — the bounce below used to fire immediately and
+  // send the player straight back to Kingdom. Reaching a tab this way reveals it.
+  const [revealed, setRevealed] = useState<Tab[]>([]);
+  const isOpen = useCallback(
+    (id: Tab) => id === "operator" || revealed.includes(id) || tabUnlock(state, stats.might, id).unlocked,
+    [revealed, state, stats.might],
+  );
+  /** Navigate from an in-game affordance, revealing the destination. */
+  const goTab = useCallback((id: Tab) => {
+    setRevealed((r) => (r.includes(id) ? r : [...r, id]));
+    setTab(id);
+  }, []);
+  /** Open the Treasury at a specific room — used by the Vault chip, the Mirror. */
+  const goTreasury = useCallback(
+    (room: TreasurySection) => {
+      setTreasuryRoom(room);
+      goTab("treasury");
+    },
+    [goTab],
+  );
 
   // If the active tab is no longer unlocked (e.g. straight after a Descend),
   // fall back home rather than rendering a system the player can't see.
   useEffect(() => {
-    if (tab !== "operator" && !tabUnlock(state, stats.might, tab).unlocked) setTab("kingdom");
-  }, [tab, state, stats.might]);
+    if (!isOpen(tab)) setTab("kingdom");
+  }, [tab, isOpen]);
 
   // Cross-device ownership sync: when an account connects, ask the mirror whether
   // this identity already holds one (claimed on another device) — no minting.
@@ -452,11 +506,17 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [walletIdentity, mirror.serial]);
+    // sessionEpoch: without it this fires once, before the token exists, and the
+    // server resolves by device id only — cross-device ownership never found.
+  }, [walletIdentity, mirror.serial, sessionEpoch]);
 
   // Claim the daily tribute, then layer on the streak milestones: the day-8
   // Scrying Mirror (async, capped supply) and the day-69 jackpot.
   const handleClaimDaily = useCallback(() => {
+    // The claim can be refused (day already taken, or the 20h anti-farm gap),
+    // and wrap() swallows that throw — so check the same predicate first rather
+    // than paying out the day-69 jackpot on a claim that never happened.
+    if (!dailyAvailable(state, now)) return;
     const day = dailyReward(state, now).streak;
     actions.claimDaily();
     if (day === JACKPOT_STREAK_DAY) {
@@ -493,16 +553,6 @@ export default function App() {
     const pull = game.openLunchbox();
     if (pull) setReveal(pull);
     else sfx.error();
-  };
-
-  // Buy a marketplace asset — settles cross-chain as USDT on Arbitrum via UA,
-  // then grants the asset in-game. This is the Universal Accounts economy.
-  const buyListing = async (l: OnchainListing) => {
-    const result = await wallet.fundWarChest(String(l.priceUsd));
-    if (!result) return;
-    if (l.kind === "hero" && l.tier) actions.grantGladiator(l.tier);
-    else if (l.kind === "gear" && l.defId) actions.grantGear(l.defId);
-    else if (l.kind === "boost") actions.applyFunding(Number(result.amount) || l.priceUsd, result.transactionId);
   };
 
   return (
@@ -544,19 +594,17 @@ export default function App() {
             ["raids", "🗺️ Raids"],
             ["worldboss", "🐉 World Boss"],
             ["duels", "🏟️ Duels"],
-            ["exchange", "💱 Exchange"],
-            ["realm", "🗺️ Realm"],
-            ["market", "🏛️ Market"],
+            ["treasury", "🏛️ Treasury"],
             ["codex", "📜 Codex"],
           ] as const
         )
           // Progressive unlocks: hide systems the player hasn't earned yet, so a
           // new legion sees 3 tabs instead of 11. (See game/unlocks.ts.)
-          .filter(([id]) => tabUnlock(state, stats.might, id).unlocked)
+          .filter(([id]) => isOpen(id))
           .map(([id, label]) => (
           <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
             {label}
-            {id === "market" && state.mercenaryBoost > 0 && <i className="dot" />}
+            {id === "treasury" && (state.mercenaryBoost > 0 || state.warChest.stored >= 1) && <i className="dot" />}
             {id === "legion" && state.lunchboxes > 0 && <i className="dot gift" />}
             {id === "duels" && state.pvp.attacksLeft > 0 && <i className="dot gift" />}
             {id === "worldboss" && state.worldBoss.lastReward && <i className="dot" />}
@@ -609,8 +657,8 @@ export default function App() {
           actions={actions}
           onAssign={(id) => setAssignRoomId(id)}
           onHero={(id) => setHeroId(id)}
-          onOpenWarChest={() => setTab("market")}
-          onOpenRaids={() => setTab("raids")}
+          onOpenWarChest={() => goTreasury("warchest")}
+          onOpenRaids={() => goTab("raids")}
         />
       )}
 
@@ -626,20 +674,20 @@ export default function App() {
 
       {tab === "duels" && <DuelsView state={state} actions={actions} />}
 
-      {tab === "exchange" && <ExchangeView state={state} now={now} actions={actions} />}
-
-      {tab === "realm" && <RealmView state={state} stats={stats} actions={actions} />}
-
-      {tab === "market" && (
-        <MarketView
-          state={state}
-          actions={actions}
-          wallet={wallet}
-          email={email}
-          setEmail={setEmail}
-          onBuy={buyListing}
-          onHero={(id) => setHeroId(id)}
-        />
+      {tab === "treasury" && (
+        <Suspense fallback={<KingdomLoading note="Opening the treasury doors…" />}>
+          <Treasury
+            state={state}
+            stats={stats}
+            now={now}
+            actions={actions}
+            wallet={wallet}
+            section={treasuryRoom}
+            onSection={setTreasuryRoom}
+            onHero={(id) => setHeroId(id)}
+            onGoTo={(t) => goTab(t as Tab)}
+          />
+        </Suspense>
       )}
 
       {tab === "codex" && <CodexView />}
@@ -692,7 +740,14 @@ export default function App() {
           }}
           onConnect={() => {
             setMirrorReveal(null);
-            setTab("market");
+            // The Ledger hosts the only sign-in UI in the app, and the Treasury
+            // is gated on 5,000 lifetime gold — a day-8 streak can arrive first,
+            // which stranded the mirror behind a button that bounced home.
+            goTreasury("ledger");
+          }}
+          onRetry={() => {
+            setMirrorReveal(null);
+            void attemptMirror();
           }}
         />
       )}
@@ -820,12 +875,14 @@ function ResourceBar({
           <small>open crate</small>
         </span>
       </button>
+      {/* One balance, one word. The address moved to the Treasury's Ledger,
+          where it belongs — a resource bar is not the place to teach hex. */}
       <Chip
         cls="onchain"
-        icon="🔗"
-        cap="Balance"
+        icon="🏛️"
+        cap="Treasury"
         v={wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
-        s={wallet.session ? shortAddr(wallet.session.address) : "offline"}
+        s={wallet.session ? "your account" : "optional"}
       />
       <button
         type="button"
@@ -1101,11 +1158,13 @@ function MirrorModal({
   onClose,
   onOperator,
   onConnect,
+  onRetry,
 }: {
   reveal: { status: string; serial?: number | null; remaining?: number; total?: number };
   onClose: () => void;
   onOperator: () => void;
   onConnect: () => void;
+  onRetry: () => void;
 }) {
   useEffect(() => {
     if (reveal.status !== "claimed") return;
@@ -1155,6 +1214,21 @@ function MirrorModal({
         <div className="reveal-title">Too many claims from your network</div>
         <div className="reveal-sub">The deep guards against greed. Try again tomorrow — your streak is safe.</div>
         <div className="reveal-actions"><button className="btn" onClick={onClose}>Understood</button></div>
+      </>
+    );
+  } else if (reveal.status === "needs_signature") {
+    body = (
+      <>
+        <div className="mirror-orb" aria-hidden>🔮</div>
+        <div className="reveal-title" style={{ color: "#c9a3ff" }}>Sign to prove the name is yours</div>
+        <div className="reveal-sub">
+          Your account is connected, but the mirror needs a signature to bind the relic to it. It
+          costs no gas. Approve the prompt in your wallet and try again — your streak is safe.
+        </div>
+        <div className="reveal-actions">
+          <button className="btn secondary" onClick={onClose}>Later</button>
+          <button className="btn" onClick={onRetry}>Sign & claim ▸</button>
+        </div>
       </>
     );
   } else if (reveal.status === "needs_identity") {
@@ -1269,6 +1343,13 @@ function OperatorView({ serial, actions, identity }: { serial: number; actions: 
         shake(6);
       } else if (res.status === "already_done") {
         setFlash("Already claimed.");
+        await refresh();
+      } else if (res.status === "not_operator") {
+        // Permanent, not a blip — don't tell them to try again.
+        setFlash("The mirror no longer answers to you. Reconnect the account that holds it.");
+        sfx.error();
+      } else if (res.status === "unknown_mission") {
+        setFlash("That mission has faded from the mirror.");
         await refresh();
       } else {
         setFlash("The mirror could not confirm it.");
@@ -2303,246 +2384,6 @@ function RevealModal({ pull, more, onAgain, onClose }: { pull: Pull; more: numbe
   );
 }
 
-// ---------------- marketplace (buy on-chain via UA + sell your assets) ----------------
-
-function MarketView({
-  state,
-  actions,
-  wallet,
-  email,
-  setEmail,
-  onBuy,
-  onHero,
-}: {
-  state: GameState;
-  actions: Actions;
-  wallet: Wallet;
-  email: string;
-  setEmail: (v: string) => void;
-  onBuy: (l: OnchainListing) => void;
-  onHero: (id: string) => void;
-}) {
-  const [mode, setMode] = useState<"buy" | "sell">("buy");
-  const [kind, setKind] = useState<"all" | OnchainListing["kind"]>("all");
-  const [rarity, setRarity] = useState<"all" | Rarity>("all");
-  const [sort, setSort] = useState<"rarity" | "cheap" | "dear">("rarity");
-  const [query, setQuery] = useState("");
-
-  const canBuy = Boolean(wallet.session && wallet.caps.particle && !wallet.busy);
-  const inv = inventoryGear(state);
-
-  const listings = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const out = ONCHAIN_LISTINGS.filter(
-      (l) =>
-        (kind === "all" || l.kind === kind) &&
-        (rarity === "all" || l.rarity === rarity) &&
-        (q === "" || l.label.toLowerCase().includes(q) || l.sub.toLowerCase().includes(q)),
-    );
-    out.sort((a, b) =>
-      sort === "cheap" ? a.priceUsd - b.priceUsd
-      : sort === "dear" ? b.priceUsd - a.priceUsd
-      : RARITY_META[b.rarity].stars - RARITY_META[a.rarity].stars || b.priceUsd - a.priceUsd,
-    );
-    return out;
-  }, [kind, rarity, sort, query]);
-
-  const sellable = [...state.dwellers].sort((a, b) => TIERS[b.tier].might - TIERS[a.tier].might);
-  // Spare gear is worth more as a lump sum — show what the whole pile fetches.
-  const gearPile = inv.reduce((sum, item) => sum + gearSellValue(item.defId), 0);
-
-  return (
-    <section className="panel market-view">
-      <div className="mkt-hero" style={{ backgroundImage: `url(${IMG.chest})` }}>
-        <div className="mkt-hero-veil" />
-        <div className="mkt-hero-body">
-          <h2>🏛️ Marketplace · the Bazaar</h2>
-          <p className="muted small">
-            Trade gladiators &amp; gear. The bridges died in the Rug — the <strong>Universal Account</strong> reaches any
-            Chain and settles <strong>cross-chain as USDT on Arbitrum</strong> (Particle <code>EIP-7702</code>). Pay from
-            any chain. No bridge, no chain switch.
-          </p>
-        </div>
-      </div>
-
-      {/* one bar: what you can spend, who you are, and which side of the counter you're on */}
-      <div className="mkt-bar">
-        <div className="mkt-purse">
-          <span className="mkt-purse-item gold">🪙 {formatNum(state.gold)}</span>
-          <span className="mkt-purse-item usd">
-            ＄{wallet.totalUsd == null ? (wallet.session ? "…" : "0.00") : wallet.totalUsd.toFixed(2)}
-          </span>
-        </div>
-        <div className="mkt-wallet">
-          {!wallet.session ? (
-            <>
-              {wallet.caps.magic && (
-                <form
-                  className="mkt-login"
-                  onSubmit={(e) => { e.preventDefault(); if (email.trim()) void wallet.loginMagic(email.trim()); }}
-                >
-                  <input type="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                  <button type="submit" className="btn buy" disabled={wallet.busy}>Magic login</button>
-                </form>
-              )}
-              <button type="button" className="btn secondary buy" disabled={wallet.busy} onClick={() => void wallet.loginInjected()}>
-                Connect wallet
-              </button>
-            </>
-          ) : (
-            <>
-              <span className="mkt-addr" title={wallet.uaAddress ? `UA / 7702 · ${wallet.uaAddress}` : wallet.session.address}>
-                <i className="live-dot" />
-                {wallet.session.method === "magic" ? "Magic" : "Wallet"} · {shortAddr(wallet.uaAddress ?? wallet.session.address)}
-              </span>
-              <button type="button" className="chip-btn" disabled={wallet.busy} onClick={() => void wallet.refreshBalances()}>↻</button>
-              <button type="button" className="chip-btn" disabled={wallet.busy} onClick={() => void wallet.logout()}>Logout</button>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="mkt-switch">
-        <button type="button" className={mode === "buy" ? "on" : ""} onClick={() => setMode("buy")}>
-          ⚡ Buy <span className="muted small">{ONCHAIN_LISTINGS.length}</span>
-        </button>
-        <button type="button" className={mode === "sell" ? "on" : ""} onClick={() => setMode("sell")}>
-          💰 Sell <span className="muted small">{sellable.length + inv.length}</span>
-        </button>
-      </div>
-
-      {mode === "buy" ? (
-        <>
-          {!wallet.caps.particle && (
-            <p className="muted small warn">Add Particle keys in <code>.env</code> to enable live on-chain buys. Everything else plays offline.</p>
-          )}
-          <div className="mkt-filters">
-            <div className="mkt-chips">
-              {([["all", "All"], ["hero", "🗡️ Gladiators"], ["gear", "🛡️ Gear"], ["boost", "✨ Boosts"]] as const).map(([k, label]) => (
-                <button key={k} type="button" className={`f-chip ${kind === k ? "on" : ""}`} onClick={() => setKind(k)}>{label}</button>
-              ))}
-            </div>
-            <div className="mkt-chips">
-              <button type="button" className={`f-chip ${rarity === "all" ? "on" : ""}`} onClick={() => setRarity("all")}>Any</button>
-              {(["epic", "legendary"] as const).map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  className={`f-chip ${rarity === r ? "on" : ""}`}
-                  style={{ ["--rar" as string]: RARITY_META[r].color }}
-                  onClick={() => setRarity(r)}
-                >
-                  {RARITY_META[r].name}
-                </button>
-              ))}
-            </div>
-            <input className="mkt-search" type="search" placeholder="Search the Bazaar…" value={query} onChange={(e) => setQuery(e.target.value)} />
-            <select className="mkt-sort" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
-              <option value="rarity">Rarest first</option>
-              <option value="cheap">Cheapest first</option>
-              <option value="dear">Priciest first</option>
-            </select>
-          </div>
-
-          <div className="listing-grid">
-            {listings.length === 0 && <p className="muted small">Nothing in the stalls matches that.</p>}
-            {listings.map((l) => {
-              const rm = RARITY_META[l.rarity];
-              return (
-                <article key={l.id} className="listing" style={{ ["--rar" as string]: rm.color }}>
-                  <div className="listing-art">
-                    <img src={l.thumb ?? l.img} alt={l.label} loading="lazy" />
-                    <span className="listing-rar">{stars(rm.stars)}</span>
-                    <span className="listing-kind">{l.kind === "hero" ? "🗡️" : l.kind === "gear" ? "🛡️" : "✨"}</span>
-                  </div>
-                  <div className="listing-body">
-                    <div className="listing-name" title={l.label}>{l.label}</div>
-                    <div className="listing-sub" style={{ color: rm.color }}>{l.sub}</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn buy"
-                    disabled={!canBuy}
-                    onClick={() => onBuy(l)}
-                    title={canBuy ? `Settles as USDT on Arbitrum` : "Connect a wallet with keys to buy on-chain"}
-                  >
-                    {wallet.busy ? "Routing…" : `＄${l.priceUsd.toFixed(2)} · Buy`}
-                  </button>
-                </article>
-              );
-            })}
-          </div>
-          {wallet.lastTx && (
-            <p className="tx-ok">Settled {wallet.lastTx.amount} USDT on Arbitrum · <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">View on UniversalX</a></p>
-          )}
-        </>
-      ) : (
-        <div className="sell-cols">
-          <div className="sell-col">
-            <div className="sell-head">
-              <h4 className="ml">🗡️ Gladiators <span className="muted small">{sellable.length}</span></h4>
-              <span className="muted small">Selling frees a bunk — you must keep one.</span>
-            </div>
-            <div className="sell-grid">
-              {sellable.map((d) => (
-                <div key={d.id} className="sell-item" style={{ ["--rar" as string]: RARITY[d.tier].color }}>
-                  <img src={TIER_PORTRAIT[d.tier]} alt={d.name} onClick={() => onHero(d.id)} />
-                  <div className="sell-info">
-                    <span className="sell-name">{d.name}</span>
-                    <span className="sell-tier" style={{ color: RARITY[d.tier].color }}>{TIERS[d.tier].name} Lv{d.level}</span>
-                  </div>
-                  <button type="button" className="chip-btn sell-btn" disabled={state.dwellers.length <= 1} onClick={() => actions.sellHero(d.id)}>
-                    🪙 {formatNum(heroSellValue(d))}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="sell-col">
-            <div className="sell-head">
-              <h4 className="ml">🛡️ Spare gear <span className="muted small">{inv.length}</span></h4>
-              {inv.length > 0 && <span className="muted small">Pile is worth 🪙 {formatNum(gearPile)}</span>}
-            </div>
-            <div className="sell-grid">
-              {inv.length === 0 && <p className="muted small">No spare gear. Open lunchboxes or buy on-chain.</p>}
-              {inv.map((item) => {
-                const g = gearDefOf(item);
-                return (
-                  <div key={item.id} className="sell-item" style={{ ["--rar" as string]: RARITY_META[g.rarity].color }}>
-                    <img src={g.img} alt={g.name} />
-                    <div className="sell-info">
-                      <span className="sell-name">{g.name}</span>
-                      <span className="sell-tier" style={{ color: RARITY_META[g.rarity].color }}>+{g.might}⚔ {g.slot}</span>
-                    </div>
-                    <button type="button" className="chip-btn sell-btn" onClick={() => actions.sellGear(item.id)}>
-                      🪙 {formatNum(gearSellValue(item.defId))}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="tiers mkt-tiers">
-        <h3>Free Company tiers (on-chain boost)</h3>
-        <ul>
-          {MERCENARY_TIERS.map((t) => {
-            const earned = state.warChestUsd >= t.minUsd;
-            return (
-              <li key={t.minUsd} className={earned ? "earned" : ""}>
-                <span>{earned ? "✓" : "≥"} ${t.minUsd}</span>
-                <span>{t.label}</span>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </section>
-  );
-}
-
 // ---------------- assign modal ----------------
 
 function AssignModal({
@@ -2560,7 +2401,11 @@ function AssignModal({
 }) {
   const def = ROOMS[room.type];
   const cap = roomCapacity(room);
-  const idle = state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id));
+  // `!d.downed` matters: assignDweller rejects the downed, and the resulting
+  // error banner paints *underneath* this modal's backdrop — so offering them
+  // here was a button that could never work and never explained itself.
+  const idle = state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id) && !d.downed);
+  const downed = state.dwellers.filter((d) => d.roomId == null && !isOnRaid(state, d.id) && d.downed);
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const apt = ROOMS[room.type].aptitude;
   return (
@@ -2590,7 +2435,13 @@ function AssignModal({
         )}
         <h4 className="ml">Idle ({idle.length})</h4>
         <div className="picker">
-          {idle.length === 0 && <p className="muted small">No idle dwellers. Recruit or open lunchboxes.</p>}
+          {idle.length === 0 && (
+            <p className="muted small">
+              {downed.length > 0
+                ? `No idle dwellers — ${downed.length} down and waiting on the Infirmary.`
+                : "No idle dwellers. Recruit or open lunchboxes."}
+            </p>
+          )}
           {idle.map((d) => {
             const match = apt && d.aptitude === apt;
             const full = workers.length >= cap;
@@ -2795,17 +2646,34 @@ function WorldBossView({ game }: { game: Game }) {
   const pending = online ? srv!.pendingReward : null;
   const hasPending = pending != null && (pending.gold > 0 || pending.legion > 0 || pending.lunchboxes > 0);
 
+  const [claiming, setClaiming] = useState(false);
+
   const onClaim = () => {
-    void claimWorldBossRewards().then((r) => {
-      if (!r || !r.reward) return;
-      const { gold, legion, lunchboxes } = r.reward;
-      if (gold || legion || lunchboxes) {
-        actions.grantArenaReward({ gold, legion, lunchboxes });
-        setFlash(`🏆 Claimed 🪙 ${formatNum(gold)}${legion ? ` + 💠 ${formatNum(legion)}` : ""}${lunchboxes ? ` + ${lunchboxes} 🎁` : ""}`);
-        sfx.legendary?.();
-      }
-      void fetchWorldBoss(legionName()).then((s) => { if (s) setSrv(s); });
-    });
+    if (claiming) return;
+    setClaiming(true);
+    setFlash(null);
+    void claimWorldBossRewards()
+      .then((r) => {
+        // claimWorldBossRewards() returns null for every failure — non-2xx, the
+        // RPC erroring into a 500, or offline. Bailing silently left the "reward
+        // ready" banner up, skipped the refresh, and gave a mashable button that
+        // did nothing at all.
+        if (!r || !r.reward) {
+          setFlash("⚠️ The vault didn't answer — your reward is safe, try again in a moment.");
+          sfx.error();
+          return;
+        }
+        const { gold, legion, lunchboxes } = r.reward;
+        if (gold || legion || lunchboxes) {
+          actions.grantArenaReward({ gold, legion, lunchboxes });
+          setFlash(`🏆 Claimed 🪙 ${formatNum(gold)}${legion ? ` + 💠 ${formatNum(legion)}` : ""}${lunchboxes ? ` + ${lunchboxes} 🎁` : ""}`);
+          sfx.legendary?.();
+        } else {
+          setFlash("Nothing left to claim.");
+        }
+        void fetchWorldBoss(legionName()).then((s) => { if (s) setSrv(s); });
+      })
+      .finally(() => setClaiming(false));
   };
 
   const flashHit = (damage: number, killed: boolean) => {
@@ -2822,11 +2690,25 @@ function WorldBossView({ game }: { game: Game }) {
       // LIVE: pay NOTHING locally — server owns the boss + the trustless payout.
       const damage = game.strikeArena(bossClass);
       if (damage == null) { sfx.error(); return; }
+      const before = srv!.you.contributed;
       flashHit(damage, false);
       void strikeWorldBoss(legionName(), damage).then((r) => {
-        if (!r) return;
+        // The optimistic "Struck for X!" above is a lie unless the server logged
+        // it. `null` covers 429 cooldown / 500 / offline; a 200 whose contributed
+        // total is unmoved covers the RPC's stale-week and capped rejections,
+        // which answer with an unchanged board. Both used to read as a clean hit.
+        if (!r) {
+          setFlash("⚠️ That blow never reached the deep — nothing was recorded.");
+          sfx.error();
+          return;
+        }
         setSrv(r);
-        if (r.resolved) setFlash(`💥 The realm felled the boss! You placed #${r.resolved.rank} of ${r.resolved.field} — claim your reward below.`);
+        if (r.resolved) {
+          setFlash(`💥 The realm felled the boss! You placed #${r.resolved.rank} of ${r.resolved.field} — claim your reward below.`);
+        } else if (r.you.contributed <= before) {
+          setFlash("⚠️ The boss shrugged it off — no damage was recorded. Wait a beat and strike again.");
+          sfx.error();
+        }
       });
       return;
     }
@@ -2850,7 +2732,7 @@ function WorldBossView({ game }: { game: Game }) {
           <span className="muted small">
             From {pending!.cycles} closed cycle{pending!.cycles > 1 ? "s" : ""} · 🪙 {formatNum(pending!.gold)}{pending!.legion ? ` + 💠 ${formatNum(pending!.legion)}` : ""}{pending!.lunchboxes ? ` + ${pending!.lunchboxes} 🎁` : ""}
           </span>
-          <button type="button" className="btn" onClick={onClaim}>Claim</button>
+          <button type="button" className="btn" disabled={claiming} onClick={onClaim}>{claiming ? "Claiming…" : "Claim"}</button>
         </div>
       )}
 
@@ -3012,128 +2894,6 @@ function DuelsView({ state, actions }: { state: GameState; actions: Actions }) {
           ? "🌐 These are REAL rival legions pulled from the shared ladder — beating a higher-rated player pays more rating & gold (ELO). Your result syncs back to the global board."
           : "Win probability follows an ELO curve; class matchup swings the fight. Duels refresh daily. (Backend offline — showing simulated opponents.)"}
       </p>
-    </section>
-  );
-}
-
-// ---------------- Exchange (DEX + Bank) ----------------
-
-function ExchangeView({ state, now, actions }: { state: GameState; now: number; actions: Actions }) {
-  const [goldIn, setGoldIn] = useState("");
-  const [legionIn, setLegionIn] = useState("");
-  const [stakeAmt, setStakeAmt] = useState("");
-  const price = dexPrice(state);
-  const gN = Number(goldIn) || 0;
-  const lN = Number(legionIn) || 0;
-  const outLegion = quoteGoldToLegion(state, gN);
-  const outGold = quoteLegionToGold(state, lN);
-  const pending = bankPending(state, now);
-  const fee = bankWithdrawFee(state, now);
-  const sN = Number(stakeAmt) || 0;
-
-  return (
-    <section className="panel exchange">
-      <div className="panel-head">
-        <h2>💱 Exchange · DEX &amp; Bank</h2>
-        <div className="rank-chip">💠 1 gold ≈ {price.toFixed(3)} $LEGION</div>
-      </div>
-
-      <div className="xc-cols">
-        <div className="xc-card">
-          <h4 className="ml">⇄ Swap (constant-product AMM · 0.3% fee)</h4>
-          <div className="swap-row">
-            <input type="number" min="0" placeholder="gold in" value={goldIn} onChange={(e) => setGoldIn(e.target.value)} />
-            <span className="swap-arrow">→ 💠 {formatNum(outLegion)}</span>
-            <button type="button" className="btn" disabled={gN <= 0 || gN > state.gold} onClick={() => { actions.swapGoldForLegion(gN); setGoldIn(""); }}>Swap gold→$LEGION</button>
-          </div>
-          <div className="swap-row">
-            <input type="number" min="0" placeholder="$LEGION in" value={legionIn} onChange={(e) => setLegionIn(e.target.value)} />
-            <span className="swap-arrow">→ 🪙 {formatNum(outGold)}</span>
-            <button type="button" className="btn secondary" disabled={lN <= 0 || lN > state.legion} onClick={() => { actions.swapLegionForGold(lN); setLegionIn(""); }}>Swap $LEGION→gold</button>
-          </div>
-          <p className="muted small">Pool: 🪙 {formatNum(state.dex.poolGold)} / 💠 {formatNum(state.dex.poolLegion)}. Big swaps move the price (slippage).</p>
-        </div>
-
-        <div className="xc-card">
-          <h4 className="ml">🏦 Bank · stake $LEGION for real yield</h4>
-          <div className="bank-stats">
-            <div><b>{formatNum(state.bank.staked)}</b><span>staked 💠</span></div>
-            <div><b>{formatNum(pending)}</b><span>pending yield</span></div>
-            <div><b>{Math.round(fee * 100)}%</b><span>withdraw fee</span></div>
-          </div>
-          <div className="swap-row">
-            <input type="number" min="0" placeholder="amount" value={stakeAmt} onChange={(e) => setStakeAmt(e.target.value)} />
-            <button type="button" className="btn" disabled={sN <= 0 || sN > state.legion} onClick={() => { actions.stakeLegion(sN); setStakeAmt(""); }}>Stake</button>
-            <button type="button" className="btn secondary" disabled={sN <= 0 || sN > state.bank.staked} onClick={() => { actions.unstakeLegion(sN); setStakeAmt(""); }}>Unstake</button>
-          </div>
-          <button type="button" className="btn" disabled={pending < 1} onClick={() => actions.claimBankYield()}>Claim {formatNum(pending)} 💠 yield</button>
-          <p className="muted small">Emissions accrue every second. Withdrawal fee decays 25%→8%→4%→0 the longer you stay staked — anti-mercenary, DeFi-Kingdoms style.</p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ---------------- Realm (Land / territories) ----------------
-
-const LAND_ALL: LandKind[] = ["gold", "provisions", "salves", "legion", "might"];
-
-function RealmView({ state, stats, actions }: { state: GameState; stats: Stats; actions: Actions }) {
-  const [kind, setKind] = useState<LandKind>("gold");
-  const claimCost = landClaimCost(state);
-  const slots = landSlotsLeft(state);
-  const gated = stats.might < LAND_MIN_MIGHT;
-  const y = landYields(state);
-  return (
-    <section className="panel realm">
-      <div className="panel-head">
-        <h2>🗺️ The Realm · territory</h2>
-        <div className="rank-chip">{state.land.length}/{LAND_SLOTS} parcels</div>
-      </div>
-      <p className="muted small">
-        Scarce parcels that yield forever. Claiming costs 💠 $LEGION and is gated by might ({LAND_MIN_MIGHT}+) — the realm answers only to strength.
-        Realm yield now: 🪙 {y.gold.toFixed(1)}/s · 🌾 {y.provisions.toFixed(1)}/s · ⛑ {y.salves.toFixed(1)}/s · 💠 {y.legion.toFixed(2)}/s · ⚔ +{Math.round(y.might)}.
-      </p>
-
-      <div className="realm-grid">
-        {state.land.map((p) => {
-          const meta = LAND_KIND_META[p.kind];
-          const upCost = landUpgradeCost(p);
-          const isMight = p.kind === "might";
-          return (
-            <article key={p.id} className={`parcel k-${p.kind}`}>
-              <div className="parcel-top"><span className="parcel-ic">{meta.icon}</span><span className="parcel-lvl">Lv {p.level}</span></div>
-              <div className="parcel-name">{meta.name}</div>
-              <div className="parcel-yield muted small">
-                {isMight ? `+${Math.round(LAND_YIELD.might * p.level)} ⚔ might` : `+${(LAND_YIELD[p.kind] * p.level).toFixed(2)}/s`}
-              </div>
-              <button type="button" className="chip-btn up" disabled={state.gold < upCost} onClick={() => actions.upgradeLand(p.id)}>▲ 🪙 {formatNum(upCost)}</button>
-            </article>
-          );
-        })}
-        {Array.from({ length: slots }).map((_, i) => (
-          <article key={`empty${i}`} className="parcel empty">
-            <span className="parcel-plus">＋</span>
-            <span className="muted small">unclaimed</span>
-          </article>
-        ))}
-      </div>
-
-      {slots > 0 && (
-        <div className="claim-bar">
-          <span className="build-label">STAKE A NEW CLAIM</span>
-          <div className="claim-kinds">
-            {LAND_ALL.map((k) => (
-              <button key={k} type="button" className={`chip-btn ${kind === k ? "on" : ""}`} onClick={() => setKind(k)}>
-                {LAND_KIND_META[k].icon} {LAND_KIND_META[k].name}
-              </button>
-            ))}
-          </div>
-          <button type="button" className="btn" disabled={gated || state.legion < claimCost} onClick={() => actions.claimLand(kind)} title={gated ? `Need ${LAND_MIN_MIGHT} might` : ""}>
-            {gated ? `🔒 need ${LAND_MIN_MIGHT} ⚔` : `Claim · 💠 ${formatNum(claimCost)}`}
-          </button>
-        </div>
-      )}
     </section>
   );
 }

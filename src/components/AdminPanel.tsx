@@ -31,6 +31,7 @@ import {
   type AdminAnalytics,
   type SessionDetail,
 } from "../lib/telemetry";
+import { TEST_GROUPS, listTests, runTests, type TestResult } from "../game/selftest";
 
 type Game = ReturnType<typeof useGame>;
 type Wallet = ReturnType<typeof useWallet>;
@@ -233,6 +234,7 @@ function TelemetrySection() {
   const [sortKey, setSortKey] = useState<"last_seen" | "total_clicks" | "total_events" | "email" | "country">("last_seen");
   const [drill, setDrill] = useState<SessionDetail | null>(null);
   const [drillId, setDrillId] = useState<string | null>(null);
+  const [drillErr, setDrillErr] = useState<string | null>(null);
 
   // Live tab controls
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -272,7 +274,14 @@ function TelemetrySection() {
   const openDrill = async (id: string) => {
     setDrillId(id);
     setDrill(null);
-    try { setDrill(await fetchSessionDetail(token.trim(), id)); } catch (e) { setErr((e as Error).message); }
+    setDrillErr(null);
+    // On a throw the modal used to sit on "Loading…" forever, with setErr's text
+    // rendering behind the backdrop. Keep the failure inside the modal.
+    try {
+      setDrill(await fetchSessionDetail(token.trim(), id));
+    } catch (e) {
+      setDrillErr((e as Error).message || "Request failed.");
+    }
   };
 
   const exportCsv = () => {
@@ -515,13 +524,15 @@ function TelemetrySection() {
 
       {/* player drill-down */}
       {drillId && (
-        <div className="adm-drill-backdrop" onClick={() => { setDrillId(null); setDrill(null); }}>
+        <div className="adm-drill-backdrop" onClick={() => { setDrillId(null); setDrill(null); setDrillErr(null); }}>
           <div className="adm-drill" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h3>{drill?.session?.email ?? "Player"} <span className="adm-dim adm-small"><Flag code={drill?.session?.country_code} /></span></h3>
-              <button className="chip-btn" onClick={() => { setDrillId(null); setDrill(null); }}>✕</button>
+              <button className="chip-btn" onClick={() => { setDrillId(null); setDrill(null); setDrillErr(null); }}>✕</button>
             </div>
-            {!drill ? (
+            {drillErr ? (
+              <p className="adm-note warn">⚠️ {drillErr}</p>
+            ) : !drill ? (
               <p className="adm-note">Loading…</p>
             ) : (
               <>
@@ -590,6 +601,124 @@ function TelemetrySection() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Self-test suite
+// ---------------------------------------------------------------------------
+
+function SelfTestSection() {
+  const [results, setResults] = useState<TestResult[]>([]);
+  const [running, setRunning] = useState(false);
+  const [only, setOnly] = useState<string | null>(null);
+  const [openFail, setOpenFail] = useState(true);
+  // Guards setState from landing after the panel closes. It MUST be re-armed on
+  // mount, not just cleared on unmount: StrictMode double-invokes effects in dev
+  // (mount → unmount → remount), so a cleanup-only ref stays false forever and
+  // every result is silently dropped.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  const all = useMemo(() => listTests(), []);
+  const total = only ? all.filter((c) => c.group === only).length : all.length;
+
+  const run = async (group: string | null) => {
+    if (running) return;
+    setRunning(true);
+    setOnly(group);
+    setResults([]);
+    try {
+      await runTests({
+        groups: group ? [group] : undefined,
+        onResult: (r) => { if (alive.current) setResults((prev) => [...prev, r]); },
+      });
+    } catch (err) {
+      if (alive.current) {
+        setResults((prev) => [...prev, {
+          id: "runner", name: "test runner", group: "runner", status: "fail", ms: 0,
+          detail: err instanceof Error ? err.message : String(err),
+        }]);
+      }
+    } finally {
+      if (alive.current) setRunning(false);
+    }
+  };
+
+  const pass = results.filter((r) => r.status === "pass").length;
+  const fail = results.filter((r) => r.status === "fail").length;
+  const skip = results.filter((r) => r.status === "skip").length;
+  const shown = openFail && fail > 0 ? results.filter((r) => r.status !== "pass") : results;
+
+  const badge = running
+    ? `${results.length}/${total}…`
+    : results.length === 0
+      ? `${all.length} tests`
+      : fail > 0 ? `${fail} FAILED` : `${pass} passed`;
+
+  return (
+    <Section title="🧪 Self-tests" count={badge} defaultOpen={false}>
+      <div className="adm-cheats">
+        <button className="adm-btn hot" disabled={running} onClick={() => run(null)}>
+          {running ? "Running…" : "Run all"}
+        </button>
+        {TEST_GROUPS.map((g) => (
+          <button key={g} className="adm-btn" disabled={running} onClick={() => run(g)}>{g}</button>
+        ))}
+      </div>
+
+      {results.length > 0 && (
+        <>
+          <div className="adm-grid">
+            <Stat k="Passed" v={pass} />
+            <Stat k="Failed" v={fail} warn={fail > 0} />
+            <Stat k="Skipped" v={skip} />
+            <Stat k="Time" v={`${results.reduce((a, r) => a + r.ms, 0).toFixed(0)} ms`} />
+          </div>
+          {fail > 0 && (
+            <p className="adm-note adm-small">
+              <label>
+                <input type="checkbox" checked={openFail} onChange={(e) => setOpenFail(e.target.checked)} />
+                {" "}hide passing tests
+              </label>
+            </p>
+          )}
+        </>
+      )}
+
+      <table className="adm-table">
+        <tbody>
+          {shown.map((r) => (
+            <tr key={r.id}>
+              <td style={{ width: 22 }}>
+                {r.status === "pass" ? "✅" : r.status === "fail" ? "❌" : "⏭️"}
+              </td>
+              <td>
+                <div>{r.name}</div>
+                {r.detail && (
+                  <div className={r.status === "fail" ? "adm-fail-detail" : "adm-dim adm-small"}>
+                    {r.detail}
+                  </div>
+                )}
+              </td>
+              <td className="adm-dim adm-small" style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                {r.group} · {r.ms.toFixed(0)}ms
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {results.length === 0 && !running && (
+        <p className="adm-note adm-dim adm-small">
+          Runs against this live browser — real saves, real WebGL, real asset URLs.
+          Save tests park your save and restore it when they finish.
+        </p>
+      )}
+    </Section>
+  );
+}
+
 export default function AdminPanel({
   game,
   wallet,
@@ -647,6 +776,9 @@ export default function AdminPanel({
 
         {/* ---- cross-user telemetry (InsForge backend) ---- */}
         <TelemetrySection />
+
+        {/* ---- in-browser test suite ---- */}
+        <SelfTestSection />
 
         {/* ---- derived stats ---- */}
         <Section title="Overview · derived" count={`${num(stats.might)}⚔`}>

@@ -8,6 +8,8 @@
 //   POST {FN_BASE}/operator-feed    → the secret mission feed (gated on owning a mirror)
 //   POST {FN_BASE}/complete-mission → validate + reward a mission (server-checked)
 
+import { cachedToken } from "./session";
+
 const FN_BASE =
   (import.meta.env.VITE_INSFORGE_FN_URL as string | undefined) ||
   "https://ymtyw98w.function2.insforge.app";
@@ -15,12 +17,26 @@ const FN_BASE =
 const OP_KEY = "idle-legion-operator";
 const MIRROR_KEY = "idle-legion-mirror";
 
-/** Stable per-device operator identity. One mirror may be minted per operator. */
+/**
+ * Stable per-device operator identity. One mirror may be minted per operator.
+ *
+ * SECURITY: this doubles as the anonymous cloud-save key (`device:<id>`), which
+ * the server accepts without a token precisely because it is assumed to be an
+ * unguessable secret — and those rows carry email/wallet PII. It used to be
+ * `Math.random()`, whose PRNG state is recoverable from a handful of outputs, so
+ * the assumption didn't hold. Now it's CSPRNG, like `arenaId()`.
+ *
+ * Ids already in localStorage are kept as-is: rotating them would orphan every
+ * existing cloud save and mirror claim. Only new devices get the strong id.
+ */
 export function operatorId(): string {
   try {
     let id = localStorage.getItem(OP_KEY);
     if (!id) {
-      id = `op_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+      const buf = new Uint8Array(16);
+      (globalThis.crypto ?? ({} as Crypto)).getRandomValues?.(buf);
+      const rand = Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+      id = `op_${rand || Math.random().toString(36).slice(2) + Date.now().toString(36)}`;
       localStorage.setItem(OP_KEY, id);
     }
     return id;
@@ -66,12 +82,25 @@ export function rememberMirror(serial: number) {
 // ---- fetch wrapper -----------------------------------------------------------
 
 async function callFn<T>(slug: string, body: Record<string, unknown>): Promise<T> {
+  // The session token is what makes `identity` mean anything server-side — an
+  // identity without it is ignored (and, for a mirror claim, refused). It's
+  // already minted at wallet-connect for the cloud save, so this costs no extra
+  // signature prompt.
   const res = await fetch(`${FN_BASE}/${slug}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ operatorId: operatorId(), ...body }),
+    body: JSON.stringify({ operatorId: operatorId(), token: cachedToken() ?? "", ...body }),
   });
-  if (!res.ok) throw new Error(`insforge ${slug} → ${res.status}`);
+  // The functions signal permanent, non-retryable outcomes with a 4xx that still
+  // carries a JSON `status` (e.g. complete-mission's 403 not_operator / 404
+  // unknown_mission). Throwing on those collapsed them into the caller's generic
+  // "couldn't reach the deep — try again", telling the player to retry something
+  // that will never succeed. Pass the body through; only fail on 5xx/garbage.
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    if (body && typeof (body as { status?: unknown }).status === "string") return body as T;
+    throw new Error(`insforge ${slug} → ${res.status}`);
+  }
   return (await res.json()) as T;
 }
 

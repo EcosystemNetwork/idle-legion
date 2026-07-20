@@ -26,12 +26,13 @@ export const UNLOCK_ORDER = [
   "raids",
   "arena",
   "codex",
-  "market",
+  "treasury",
   "duels",
   "worldboss",
-  "realm",
-  "exchange",
 ] as const;
+// `realm` and `exchange` are no longer top-level tabs — they are rooms inside
+// the Treasury and gate themselves there, so they stay out of the main nav's
+// "next goal" teaser while keeping their own unlock rules below.
 
 export function tabUnlock(state: GameState, might: number, id: string): TabUnlock {
   // Veterans keep every system across runs.
@@ -59,6 +60,9 @@ export function tabUnlock(state: GameState, might: number, id: string): TabUnloc
     // --- loot & trade ---
     case "codex":
       return gate(state.gear.length > 0, "Find your first piece of gear");
+    // The Treasury opens once the player has real gold to do something with —
+    // it holds the Bazaar, Exchange, Bank, War Chest, Estates and Ledger.
+    case "treasury":
     case "market":
       return gate(state.totalGoldEarned >= 5_000, "Earn 5,000 total gold");
 

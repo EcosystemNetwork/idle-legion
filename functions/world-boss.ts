@@ -36,6 +36,12 @@ const CONTRIB_CAP = 500;
 const HIT_COOLDOWN_MS = 7_500;
 /** No single strike may exceed this fraction of the boss's max HP (was 0.5). */
 const MAX_HIT_FRACTION = 0.02;
+/**
+ * Effectively "no per-player share cap" — world_boss_strike takes a total cap
+ * argument, and this makes its arithmetic inert (see the note at the call site
+ * for why a share cap is deliberately not wanted here).
+ */
+const NO_SHARE_CAP = Number.MAX_SAFE_INTEGER;
 
 /**
  * SYBIL RESISTANCE — why there is no per-player share cap and no rank table.
@@ -206,26 +212,26 @@ export default async function (req: Request): Promise<Response> {
   });
 
   // ---- claim: pay out (and retire) this player's recorded rewards ----
+  // One atomic statement (see world_boss_claim): the UPDATE both flips the rows
+  // and returns exactly what IT transitioned, so the payout is whatever this
+  // call actually won. Reading first and updating second let two concurrent
+  // claims (a double-click, or two tabs) each read the same unclaimed rows and
+  // both be paid in full — minting gold from nothing.
   if (op === "claim") {
-    const { data } = await admin.database
-      .from("world_boss_reward")
-      .select("week,gold,legion,lunchboxes")
-      .eq("player_key", playerKey)
-      .eq("claimed", false);
-    const rows = (data ?? []) as { week: number; gold: number; legion: number; lunchboxes: number }[];
-    const reward = rows.reduce(
-      (a, r) => ({ gold: a.gold + Number(r.gold), legion: a.legion + Number(r.legion), lunchboxes: a.lunchboxes + Number(r.lunchboxes), cycles: a.cycles + 1 }),
-      { gold: 0, legion: 0, lunchboxes: 0, cycles: 0 },
-    );
-    if (rows.length) {
-      // Flip every unclaimed row for this player to claimed.
-      await admin.database
-        .from("world_boss_reward")
-        .update({ claimed: true })
-        .eq("player_key", playerKey)
-        .eq("claimed", false);
+    const { data, error } = await admin.database.rpc("world_boss_claim", { p_key: playerKey });
+    if (error) {
+      console.error("[world-boss] claim failed", error.message);
+      return json({ error: "claim failed" }, 500);
     }
-    return json({ reward });
+    const r = (data ?? {}) as { gold?: number; legion?: number; lunchboxes?: number; cycles?: number };
+    return json({
+      reward: {
+        gold: Number(r.gold) || 0,
+        legion: Number(r.legion) || 0,
+        lunchboxes: Number(r.lunchboxes) || 0,
+        cycles: Number(r.cycles) || 0,
+      },
+    });
   }
 
   if (op === "hit") {
@@ -234,40 +240,54 @@ export default async function (req: Request): Promise<Response> {
 
     const { boss, resolved } = await ensureBoss(admin, now, playerKey);
 
-    const { data: prior } = await admin.database
-      .from("world_boss_contrib")
-      .select("contributed,updated_at")
-      .eq("week", boss.week)
-      .eq("player_key", playerKey)
-      .maybeSingle();
-
-    // (1) Server-enforced strike cooldown — a scripted client can't spam hits.
-    const lastAt = prior?.updated_at ? Date.parse(prior.updated_at) : 0;
-    if (lastAt && now - lastAt < HIT_COOLDOWN_MS) {
-      return json({ error: "cooldown", retryInMs: HIT_COOLDOWN_MS - (now - lastAt) }, 429);
-    }
-
-    // (2) Per-hit plausibility ceiling — no one-shotting the boss.
+    // Per-hit plausibility ceiling — no one-shotting the boss. Stays here
+    // because it needs max_hp, which we already hold.
     damage = Math.min(damage, boss.max_hp * MAX_HIT_FRACTION);
 
-    // NOTE: there is deliberately NO per-player share cap here any more.
-    // It was strictly counter-productive: because `player_key` is client-chosen,
-    // the cap could never actually bind an attacker (rotate keys), while it did
-    // bind honest players — and in doing so it made splitting across keys the
-    // only way to claim more than 40% of a boss. It manufactured Sybil pressure
-    // and defended nothing. With share-proportional payouts (see CYCLE_POOL)
-    // there is no advantage to splitting, so no cap is needed. The cooldown and
-    // per-hit ceiling still bound the achievable damage RATE.
-    const priorTotal = prior ? Number(prior.contributed) : 0;
+    // Everything else — the cooldown check, the HP decrement and the
+    // contribution increment — happens inside world_boss_strike as ONE
+    // transaction. Doing it here as read-then-write meant concurrent raiders
+    // each read the same HP and wrote absolute values, so all but the last
+    // player's damage silently vanished (the boss became unkillable while the
+    // leaderboard still credited everyone). The UPDATE is also week-guarded, so
+    // a hit that arrives after the cycle rolled is dropped instead of gutting a
+    // freshly-spawned boss.
+    //
+    // NOTE: there is deliberately NO per-player share cap. It was strictly
+    // counter-productive: because `player_key` is client-chosen, the cap could
+    // never bind an attacker (rotate keys) while it did bind honest players,
+    // manufacturing Sybil pressure and defending nothing. With
+    // share-proportional payouts (see CYCLE_POOL) splitting gains nothing.
+    // NO_SHARE_CAP keeps the RPC's cap arithmetic inert.
+    const { data: strike, error: strikeErr } = await admin.database.rpc("world_boss_strike", {
+      p_week: boss.week,
+      p_key: playerKey,
+      p_name: name,
+      p_damage: damage,
+      p_cooldown_ms: HIT_COOLDOWN_MS,
+      p_max_total: NO_SHARE_CAP,
+    });
+    if (strikeErr) {
+      console.error("[world-boss] strike failed", strikeErr.message);
+      return json({ error: "strike failed" }, 500);
+    }
 
-    const newHp = Math.max(0, Number(boss.hp) - damage);
-    await admin.database.from("world_boss").update({ hp: newHp, updated_at: new Date().toISOString() }).eq("id", 1);
+    const res = (strike ?? {}) as {
+      applied?: number;
+      reason?: string;
+      hp?: number;
+      retryInMs?: number;
+    };
+    if (!res.applied) {
+      if (res.reason === "cooldown") {
+        return json({ error: "cooldown", retryInMs: Number(res.retryInMs) || HIT_COOLDOWN_MS }, 429);
+      }
+      // stale-week / capped / no-damage: report the live board, no damage dealt.
+      const b0 = await leaderboardFor(admin, boss.week, BOARD_LIMIT);
+      return json(await shape(admin, boss, b0, playerKey, resolved));
+    }
 
-    const total = priorTotal + damage;
-    await admin.database
-      .from("world_boss_contrib")
-      .upsert([{ week: boss.week, player_key: playerKey, name, contributed: total, updated_at: new Date().toISOString() }], { onConflict: "week,player_key" });
-
+    const newHp = Number(res.hp ?? boss.hp);
     const board = await leaderboardFor(admin, boss.week, BOARD_LIMIT);
     return json(await shape(admin, { ...boss, hp: newHp }, board, playerKey, resolved));
   }

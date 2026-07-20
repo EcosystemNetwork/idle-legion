@@ -1106,7 +1106,11 @@ export function upgradeRoom(state: GameState, roomId: string): GameState {
     ...state,
     gold: state.gold - cost,
     rooms: state.rooms.map((r) =>
-      r.id === roomId ? { ...r, level: r.level + 1 } : r,
+      // `upgradedAt` is presentation-only: it gives the chamber a window in
+      // which to play the masonry animation. Stamping it here (rather than
+      // having the UI hold its own timer) means the build beat survives a
+      // remount, a tab switch and a cloud-save round-trip.
+      r.id === roomId ? { ...r, level: r.level + 1, upgradedAt: Date.now() } : r,
     ),
   };
 }
@@ -1358,7 +1362,7 @@ const INCIDENT_LABELS: Record<IncidentKind, string> = {
 
 /** Rush a room: instantly fill its storage, but risk an incident. */
 /** A room may only be rushed this often — without it, rushing was free income. */
-const RUSH_COOLDOWN_MS = 60_000;
+export const RUSH_COOLDOWN_MS = 60_000;
 
 export function rushRoom(state: GameState, roomId: string): GameState {
   const room = roomById(state, roomId);

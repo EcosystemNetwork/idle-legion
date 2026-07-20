@@ -27,6 +27,11 @@ const CEIL: Record<string, number> = {
   lunchboxes: 1e6,
   renown: 1e6,
   descents: 1e5,
+  // Paid-tier fields: these drive the mercenary boost and the "funded" badge, so
+  // an unbounded forgery here is the one that would read as real spend.
+  warChestUsd: 1e7,
+  mercenaryBoost: 100,
+  totalGoldEarned: 1e15,
 };
 
 function finiteInRange(v: unknown, max: number): boolean {
@@ -176,35 +181,41 @@ export default async function (req: Request): Promise<Response> {
     const bad = validateState(state);
     if (bad) return json({ error: "state rejected", reason: bad }, 422);
 
-    const savedAt = Math.max(0, Number(body.savedAt) || 0);
+    // Clamp to (now + small skew allowance). `savedAt` is a client wall clock
+    // and ordering is last-write-wins, so an unclamped far-future stamp — from a
+    // device with a broken clock or a forged request — wins forever: every
+    // honest save afterwards looks "stale" and is rejected, freezing that
+    // account's cloud copy permanently with no recovery path.
+    const CLOCK_SKEW_MS = 60_000;
+    const savedAt = Math.min(
+      Math.max(0, Math.floor(Number(body.savedAt) || 0)),
+      Date.now() + CLOCK_SKEW_MS,
+    );
     const email = body.email ? String(body.email).slice(0, 320) : null;
     const wallet = body.walletAddress ? String(body.walletAddress).slice(0, 128) : null;
 
-    // Last-write-wins: skip a write that's older than what we already hold.
-    const { data: prior } = await admin.database
-      .from("player_saves")
-      .select("saved_at")
-      .eq("player_key", playerKey)
-      .maybeSingle();
-    if (prior && Number(prior.saved_at) > savedAt) {
-      return json({ ok: false, stale: true, savedAt: Number(prior.saved_at) });
+    // Last-write-wins, enforced as ONE conditional upsert (see
+    // save_player_state). Reading saved_at and then writing let two devices both
+    // pass the freshness check and the slower write land last — silently
+    // replacing newer progress with older, and leaving saved_at claiming the
+    // older stamp so the newer device would never re-push. The RPC's
+    // `WHERE saved_at <= excluded.saved_at` makes that impossible, and it also
+    // coalesces the identity columns so a not-yet-signed-in device can't null
+    // out an address we already learned.
+    const { data, error } = await admin.database.rpc("save_player_state", {
+      p_key: playerKey,
+      p_state: state,
+      p_saved_at: savedAt,
+      p_email: email,
+      p_wallet: wallet,
+    });
+    if (error) {
+      console.error("[cloud-save] save failed", error.message);
+      return json({ error: "save failed" }, 500);
     }
-
-    const nowIso = new Date().toISOString();
-    const row: Record<string, unknown> = {
-      player_key: playerKey,
-      state,
-      saved_at: savedAt,
-      updated_at: nowIso,
-      ...(email ? { email } : {}),
-      ...(wallet ? { wallet_address: wallet } : {}),
-      ...(prior ? {} : { created_at: nowIso }),
-    };
-    const { error } = await admin.database
-      .from("player_saves")
-      .upsert([row], { onConflict: "player_key" });
-    if (error) return json({ error: "save failed", detail: error.message }, 500);
-    return json({ ok: true, savedAt });
+    const r = (data ?? {}) as { ok?: boolean; stale?: boolean; savedAt?: number };
+    if (!r.ok) return json({ ok: false, stale: r.stale === true, savedAt: Number(r.savedAt) || 0 });
+    return json({ ok: true, savedAt: Number(r.savedAt) || savedAt });
   }
 
   return json({ error: "unknown op" }, 400);

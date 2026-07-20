@@ -150,6 +150,11 @@ export interface Room {
   lastTick: number;
   /** When this room was last rushed — gates the rush cooldown. */
   rushAt?: number;
+  /**
+   * When this room was last upgraded. Presentation-only: drives the "masons are
+   * in" build animation window (see UPGRADE_ANIM_MS in roomState.ts).
+   */
+  upgradedAt?: number;
 }
 
 export interface RaidMission {

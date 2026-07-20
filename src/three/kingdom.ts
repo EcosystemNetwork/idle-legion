@@ -30,7 +30,12 @@ export interface BuildingDef {
   base: number; // wall colour
 }
 
-const BUILDINGS: BuildingDef[] = [
+/**
+ * The kingdom's buildings, in ring order. Exported because the DOM hotspot
+ * overlay (components/KingdomOverlay) renders one marker per entry and needs
+ * the same ids, names and ordering the scene uses.
+ */
+export const BUILDINGS: BuildingDef[] = [
   { id: "legion", name: "Barracks", sub: "your gladiators", icon: KIT.bld.warhall, accent: 0xff5a4d, base: 0x3a2a2e },
   { id: "arena", name: "Colosseum", sub: "fight world bosses", icon: KIT.bld.colosseum, accent: 0xffc24d, base: 0x3a3326 },
   { id: "raids", name: "War Room", sub: "raid the Wastes", icon: KIT.bld.hunt, accent: 0x6bd36b, base: 0x243026 },
@@ -46,11 +51,32 @@ const BLD_BASE_Y = 0.4;
 const BLD_H = 3.4;
 const ART_Y = BLD_BASE_Y + BLD_H / 2;
 
+/** Screen-space anchor for one building, in CSS pixels relative to the canvas. */
+export interface ProjectedBuilding {
+  id: string;
+  x: number;
+  y: number;
+  /** 1 at the ring's near edge, smaller as the building recedes. */
+  scale: number;
+  /** False when the building is behind the camera. */
+  visible: boolean;
+  /** Painter's-algorithm depth — larger means further away. */
+  depth: number;
+}
+
 export interface KingdomHandle {
-  /** Reflect live game state (dweller headcount shown wandering). */
-  update: (snap: { dwellers?: number }) => void;
+  /** Reflect live game state (dweller headcount, locked buildings). */
+  update: (snap: { dwellers?: number; locked?: readonly string[] }) => void;
   /** Currently-hovered building, for an optional HTML overlay. */
   onHoverChange: (cb: (b: BuildingDef | null) => void) => void;
+  /**
+   * Per-frame screen positions for the DOM hotspot overlay. The callback fires
+   * inside the render loop and is expected to write transforms directly to DOM
+   * nodes — routing 60fps through React state would stall the whole app.
+   */
+  onProject: (cb: (pts: ProjectedBuilding[]) => void) => void;
+  /** Programmatically fly to a building, as if it had been clicked. */
+  focus: (id: string) => void;
   dispose: () => void;
 }
 
@@ -63,6 +89,12 @@ interface BuildingEntry {
   art: THREE.Sprite; // the building billboard — bobs independently of the pedestal
   baseY: number;
   hoverT: number; // 0..1 eased hover amount
+  /** Gated by progressive unlocks — rendered as a cold, unlit silhouette. */
+  locked: boolean;
+  /** 0..1 eased lock amount, so the reveal when it unlocks reads as an event. */
+  lockT: number;
+  /** Reused anchor for the DOM overlay projection; avoids a per-frame alloc. */
+  anchor: THREE.Vector3;
 }
 
 export function buildKingdom(
@@ -98,14 +130,36 @@ export function buildKingdom(
   scene.add(rim);
 
   // --- Cavern floor. --------------------------------------------------------
-  const floorTex = texLoader.load(KIT.tex.floor);
-  floorTex.colorSpace = THREE.SRGBColorSpace;
+  // Drawn, not photographed: a photo-real cobble texture fought the painterly
+  // sprites and flat-shaded geometry, and its 319x380 source tiled with a
+  // visible seam. See makeFlagstoneTexture.
+  const floorTex = track(makeFlagstoneTexture());
   floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-  floorTex.repeat.set(8, 8);
-  track(floorTex);
-  const floorGeo = track(new THREE.CircleGeometry(15, 64));
+  floorTex.repeat.set(4, 4); // ~1m flagstones across the 30m plaza
+  floorTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  // Ring rather than circle purely for the radial segments: vertex colours ease
+  // the paving into the cavern dark instead of ending on a hard colour step.
+  const floorGeo = track(new THREE.RingGeometry(0, 15, 64, 10));
+  {
+    const pos = floorGeo.attributes.position;
+    const col = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const r = Math.hypot(pos.getX(i), pos.getY(i)) / 15;
+      const k = 1 - Math.pow(Math.max(0, (r - 0.3) / 0.7), 1.6) * 0.94;
+      col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = k;
+    }
+    floorGeo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  }
   const floorMat = track(
-    new THREE.MeshStandardMaterial({ map: floorTex, color: 0x6b6472, roughness: 0.95, metalness: 0.05 }),
+    new THREE.MeshStandardMaterial({
+      map: floorTex,
+      vertexColors: true,
+      // The plaza sits under a bright key; knocked back so the ground stays
+      // ground and the buildings and crystal keep the eye.
+      color: 0x8d86a0,
+      roughness: 0.92,
+      metalness: 0.04,
+    }),
   );
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
@@ -172,7 +226,19 @@ export function buildKingdom(
       visual.add(torch);
     }
 
-    entries.push({ def, group, visual, windows, art, baseY: 0, hoverT: 0 });
+    entries.push({
+      def,
+      group,
+      visual,
+      windows,
+      art,
+      baseY: 0,
+      hoverT: 0,
+      locked: false,
+      lockT: 0,
+      // Sits just above the building art, where the DOM marker hangs.
+      anchor: new THREE.Vector3(x, BLD_BASE_Y + BLD_H + 0.5, z),
+    });
     // Only the tagged collider picks — see makeBuilding for why the art and
     // name-plate sprites are excluded.
     group.traverse((o) => {
@@ -345,6 +411,46 @@ export function buildKingdom(
     entries.map((e) => e.group.position.clone()),
   );
 
+  // --- DOM hotspot projection. ----------------------------------------------
+  // The overlay's markers are real DOM (labels, badges, tap targets), so their
+  // screen positions have to be recomputed every frame as the camera orbits.
+  // The array and its entries are allocated once and mutated in place — this
+  // runs at 60fps and a fresh array per frame would churn the GC hard.
+  let projectCb: ((pts: ProjectedBuilding[]) => void) | null = null;
+  const projected: ProjectedBuilding[] = entries.map((e) => ({
+    id: e.def.id,
+    x: 0,
+    y: 0,
+    scale: 1,
+    visible: false,
+    depth: 0,
+  }));
+  const projScratch = new THREE.Vector3();
+
+  function emitProjection() {
+    if (!projectCb) return;
+    const w = renderer.domElement.clientWidth;
+    const h = renderer.domElement.clientHeight;
+    if (!w || !h) return;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const p = projected[i];
+      projScratch.copy(e.anchor);
+      // Ride the hover lift so the marker stays glued to its building.
+      projScratch.y += e.visual.position.y;
+      const dist = camera.position.distanceTo(projScratch);
+      projScratch.project(camera);
+      p.visible = projScratch.z < 1;
+      p.x = (projScratch.x * 0.5 + 0.5) * w;
+      p.y = (-projScratch.y * 0.5 + 0.5) * h;
+      p.depth = dist;
+      // Markers shrink with distance but never below 78% — a label the player
+      // can't read is worse than one that's slightly out of perspective.
+      p.scale = Math.max(0.78, Math.min(1.12, 15 / dist));
+    }
+    projectCb(projected);
+  }
+
   // --- Per-frame animation. -------------------------------------------------
   const unsub = stage.onFrame((dt, t) => {
     // Resolve at most one hover raycast per frame (see pendingMove).
@@ -384,8 +490,26 @@ export function buildKingdom(
       // start flickering between itself and its neighbour.
       e.visual.position.y = e.hoverT * 0.35;
       // Gentle idle bob on the art only — a floating pedestal would read wrong.
-      e.art.position.y = ART_Y + Math.sin(t * 1.15 + e.group.position.x * 1.3) * 0.06;
-      e.windows.emissiveIntensity = 0.8 + e.hoverT * 1.6 + Math.sin(t * 3 + e.group.position.x) * 0.1;
+      // Locked buildings hold perfectly still: stillness is what sells "dormant".
+      const bob = (1 - e.lockT) * Math.sin(t * 1.15 + e.group.position.x * 1.3) * 0.06;
+      e.art.position.y = ART_Y + bob;
+
+      // Locked buildings render as cold silhouettes — the art drained toward
+      // black-violet and the torch-lit rim gone dark. Eased rather than
+      // switched, so the moment a system unlocks the building visibly wakes up.
+      const lockTarget = e.locked ? 1 : 0;
+      e.lockT += (lockTarget - e.lockT) * Math.min(1, dt * 3);
+      if (e.lockT > 0.002 || lockTarget > 0) {
+        const k = e.lockT;
+        // Toward a dim violet-grey rather than pure black, so the silhouette
+        // still separates from the cavern floor behind it.
+        e.art.material.color.setRGB(1 - k * 0.78, 1 - k * 0.82, 1 - k * 0.7);
+        e.art.material.opacity = 1 - k * 0.22;
+        e.windows.emissive.setHex(e.locked ? 0x5b5170 : e.def.accent);
+      }
+      e.windows.emissiveIntensity =
+        (1 - e.lockT * 0.82) *
+        (0.8 + e.hoverT * 1.6 + Math.sin(t * 3 + e.group.position.x) * 0.1);
     }
 
     for (const tr of torchLights) {
@@ -393,14 +517,30 @@ export function buildKingdom(
     }
 
     dwellers.update(dt, t);
+
+    // Last, so the markers land on the camera position this frame actually
+    // rendered — projecting earlier leaves the labels a frame behind the world.
+    emitProjection();
   });
 
   return {
     update(snap) {
       if (typeof snap.dwellers === "number") dwellers.setActive(snap.dwellers);
+      if (snap.locked) {
+        const set = new Set(snap.locked);
+        for (const e of entries) e.locked = set.has(e.def.id);
+      }
     },
     onHoverChange(cb) {
       hoverCb = cb;
+    },
+    onProject(cb) {
+      projectCb = cb;
+      emitProjection(); // paint once immediately so markers don't pop in
+    },
+    focus(id) {
+      const entry = entries.find((e) => e.def.id === id);
+      if (entry && !flight) flyTo(entry);
     },
     dispose() {
       unsub();
@@ -411,6 +551,7 @@ export function buildKingdom(
       window.removeEventListener("scroll", invalidateRect, { capture: true });
       window.removeEventListener("resize", invalidateRect);
       pendingMove = null;
+      projectCb = null;
       if (resumeTimer) window.clearTimeout(resumeTimer);
       controls.dispose();
       dwellers.dispose();
@@ -434,6 +575,258 @@ export function buildKingdom(
 /** Ease used by the building fly-to so it starts and lands softly. */
 function easeInOutCubic(x: number): number {
   return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+
+/** Small deterministic PRNG so the plaza looks identical on every load. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * The cavern plaza floor: hand-cut flagstones drawn procedurally rather than a
+ * photo texture, so the ground matches the scene's painterly low-poly look and
+ * the game's cool-purple / torch-warm palette.
+ *
+ * Seamless by construction — the stones sit on a jittered lattice whose jitter
+ * wraps at the tile edge, so no stone ever crosses the seam and the boundary
+ * vertices on opposite sides are identical.
+ */
+function makeFlagstoneTexture(): THREE.CanvasTexture {
+  const S = 1024; // tile resolution
+  const N = 7; // lattice cells per side
+  const CELL = S / N;
+  const GAP = CELL * 0.036; // mortar recess between stones
+  const rnd = mulberry32(0x5eed1e);
+
+  const c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d")!;
+
+  // Mortar / packed-dirt bed showing through the joints.
+  g.fillStyle = "#1a1524";
+  g.fillRect(0, 0, S, S);
+
+  // Jittered lattice. Index modulo N so column/row N reuses column/row 0's
+  // offset — that's what keeps the tile seamless.
+  const J = CELL * 0.17;
+  const jit: Array<Array<[number, number]>> = [];
+  for (let i = 0; i <= N; i++) {
+    jit[i] = [];
+    for (let j = 0; j <= N; j++) {
+      const si = i % N;
+      const sj = j % N;
+      const r = mulberry32(0x1000 + si * 131 + sj * 977);
+      jit[i][j] = [(r() - 0.5) * 2 * J, (r() - 0.5) * 2 * J];
+    }
+  }
+  // Edge vertices stay pinned on the seam line so opposite edges line up.
+  const vert = (i: number, j: number): [number, number] => {
+    const [dx, dy] = jit[i][j];
+    return [i * CELL + (i === 0 || i === N ? 0 : dx), j * CELL + (j === 0 || j === N ? 0 : dy)];
+  };
+
+  // Chipping profile for edges that sit on the tile boundary. Every harmonic
+  // has a whole number of periods across S, so seamWave(t) === seamWave(t + S)
+  // and the two sides of the seam chip identically.
+  const W = (Math.PI * 2) / S;
+  const seamWave = (t: number): number =>
+    ((Math.sin(W * 7 * t) + 0.7 * Math.sin(W * 13 * t + 1.7) + 0.45 * Math.sin(W * 23 * t + 3.3)) / 2.15) *
+    GAP *
+    0.85;
+
+  // Claim cells into stones of 1x1, 2x1 or 1x2 so the grid stops reading as a grid.
+  const used: boolean[][] = Array.from({ length: N }, () => Array(N).fill(false));
+  const stones: Array<Array<[number, number]>> = [];
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      if (used[i][j]) continue;
+      let w = 1;
+      let h = 1;
+      const roll = rnd();
+      if (roll < 0.26 && i + 1 < N && !used[i + 1][j]) w = 2;
+      else if (roll < 0.5 && j + 1 < N && !used[i][j + 1]) h = 2;
+      for (let a = 0; a < w; a++) for (let b = 0; b < h; b++) used[i + a][j + b] = true;
+
+      // Trace the outline through every boundary vertex (not just the corners),
+      // so a merged stone still interlocks with its jittered neighbours.
+      const poly: Array<[number, number]> = [];
+      for (let a = 0; a <= w; a++) poly.push(vert(i + a, j));
+      for (let b = 1; b <= h; b++) poly.push(vert(i + w, j + b));
+      for (let a = w - 1; a >= 0; a--) poly.push(vert(i + a, j + h));
+      for (let b = h - 1; b >= 1; b--) poly.push(vert(i, j + b));
+
+      // Rough the cut edges up. Dead-straight edges are the strongest "this was
+      // generated" tell; real quarried stone chips. The roughened outline is
+      // computed once and reused by every pass so fill, bevel and joint agree.
+      const rough: Array<[number, number]> = [];
+      for (let k = 0; k < poly.length; k++) {
+        const [ax, ay] = poly[k];
+        const [bx, by] = poly[(k + 1) % poly.length];
+        // Edges on the tile boundary get the S-periodic waveform instead of
+        // free jitter, so the stone on the far side of the seam chips to
+        // exactly the same profile. Displacement is expressed on the fixed
+        // axis, not along the normal, since winding flips between the two sides.
+        const seamX = (ax === 0 && bx === 0) || (ax === S && bx === S);
+        const seamY = (ay === 0 && by === 0) || (ay === S && by === S);
+        const len = Math.hypot(bx - ax, by - ay) || 1;
+        const nx = -(by - ay) / len;
+        const ny = (bx - ax) / len;
+        const steps = Math.max(2, Math.round(len / 24));
+        for (let t = 0; t < steps; t++) {
+          const f = t / steps;
+          const px = ax + (bx - ax) * f;
+          const py = ay + (by - ay) * f;
+          if (seamX) rough.push([px + seamWave(py), py]);
+          else if (seamY) rough.push([px, py + seamWave(px)]);
+          else {
+            const amp = (rnd() - 0.5) * 2 * GAP * 0.85;
+            rough.push([px + nx * amp, py + ny * amp]);
+          }
+        }
+      }
+      stones.push(rough);
+    }
+  }
+
+  const trace = (poly: Array<[number, number]>, inset: number, dx = 0, dy = 0) => {
+    let cx = 0;
+    let cy = 0;
+    for (const [x, y] of poly) {
+      cx += x;
+      cy += y;
+    }
+    cx /= poly.length;
+    cy /= poly.length;
+    g.beginPath();
+    poly.forEach(([x, y], k) => {
+      const len = Math.hypot(x - cx, y - cy) || 1;
+      const px = x + ((cx - x) / len) * inset + dx;
+      const py = y + ((cy - y) / len) * inset + dy;
+      if (k === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    });
+    g.closePath();
+  };
+
+  for (const poly of stones) {
+    // Cool basalt with a faint purple undertone; a minority of stones carry a
+    // warmer, torch-lit cast so the plaza isn't monochrome. Saturation stays
+    // low on purpose — stone reads as stone through value, not hue.
+    const warm = rnd() < 0.12;
+    const hue = warm ? 30 + rnd() * 12 : 256 + rnd() * 18;
+    const sat = warm ? 3 + rnd() * 3 : 4 + rnd() * 5;
+    const lum = 18 + rnd() * 10;
+
+    g.save();
+    trace(poly, GAP);
+    g.clip();
+    g.fillStyle = `hsl(${hue} ${sat}% ${lum}%)`;
+    g.fill();
+
+    // Chiselled bevel: light catches the top-left cut, the bottom-right recedes.
+    g.globalCompositeOperation = "source-atop";
+    trace(poly, GAP + 2, -1.6, -1.6);
+    g.fillStyle = `hsl(${hue} ${sat}% ${lum + 6}%)`;
+    g.fill();
+    trace(poly, GAP + 2, 1.6, 2);
+    g.fillStyle = `hsl(${hue} ${sat}% ${Math.max(6, lum - 7)}%)`;
+    g.fill();
+    trace(poly, GAP + 4.5, 0, 0);
+    g.fillStyle = `hsl(${hue} ${sat}% ${lum}%)`;
+    g.fill();
+
+    // Weathering: mineral speckle, then a hairline crack or two — scattered
+    // across the stone's own bounding box, since the clip discards the rest.
+    const xs = poly.map((p) => p[0]);
+    const ys = poly.map((p) => p[1]);
+    const x0 = Math.min(...xs);
+    const y0 = Math.min(...ys);
+    const bw = Math.max(...xs) - x0;
+    const bh = Math.max(...ys) - y0;
+    // Soft blotches first (the cloudy weathering that stops a stone reading as
+    // a flat fill), then hard speckle on top (grit and mineral flecks).
+    for (let k = 0; k < 14; k++) {
+      const x = x0 + rnd() * bw;
+      const y = y0 + rnd() * bh;
+      const r = 12 + rnd() * 48;
+      const dl = (rnd() - 0.5) * 13;
+      const blob = g.createRadialGradient(x, y, 0, x, y, r);
+      blob.addColorStop(0, `hsl(${hue} ${sat}% ${lum + dl}% / 0.5)`);
+      blob.addColorStop(1, `hsl(${hue} ${sat}% ${lum + dl}% / 0)`);
+      g.fillStyle = blob;
+      g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    for (let k = 0; k < 900; k++) {
+      const x = x0 + rnd() * bw;
+      const y = y0 + rnd() * bh;
+      const d = rnd() * 2.6 + 0.4;
+      g.fillStyle = `hsl(${hue} ${sat}% ${lum + (rnd() - 0.45) * 30}% / ${0.14 + rnd() * 0.3})`;
+      g.fillRect(x, y, d, d);
+    }
+    if (rnd() < 0.55) {
+      let x = x0 + rnd() * bw;
+      let y = y0 + rnd() * bh;
+      g.strokeStyle = `hsl(${hue} ${sat}% ${Math.max(5, lum - 12)}% / 0.5)`;
+      g.lineWidth = 1.2;
+      g.beginPath();
+      g.moveTo(x, y);
+      for (let k = 0; k < 6; k++) {
+        x += (rnd() - 0.5) * 40;
+        y += (rnd() - 0.5) * 40;
+        g.lineTo(x, y);
+      }
+      g.stroke();
+    }
+    g.restore();
+
+    // Contact shading in the joint, so stones sit *in* the bed rather than on
+    // it. Kept soft — a hard black line reads as a cel-shaded outline.
+    trace(poly, GAP - 1);
+    g.strokeStyle = "rgba(10, 7, 17, 0.32)";
+    g.lineWidth = 3;
+    g.stroke();
+  }
+
+  // Low-frequency wear crossing stone boundaries: foot-polish and dust drifts
+  // that don't respect the masonry. Drawn as a 3x3 wrapped stamp so blotches
+  // straddling the tile edge continue correctly on the far side.
+  for (let k = 0; k < 18; k++) {
+    const bx = rnd() * S;
+    const by = rnd() * S;
+    const r = 90 + rnd() * 180;
+    const dark = rnd() < 0.6;
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        const x = bx + ox * S;
+        const y = by + oy * S;
+        if (x + r < 0 || x - r > S || y + r < 0 || y - r > S) continue;
+        const blob = g.createRadialGradient(x, y, 0, x, y, r);
+        blob.addColorStop(0, dark ? "rgba(9, 6, 15, 0.3)" : "rgba(226, 214, 236, 0.075)");
+        blob.addColorStop(1, "rgba(0,0,0,0)");
+        g.fillStyle = blob;
+        g.fillRect(x - r, y - r, r * 2, r * 2);
+      }
+    }
+  }
+
+  // Fine grain over everything, kept clear of the seam so it can't mismatch.
+  for (let k = 0; k < 5000; k++) {
+    const x = 3 + rnd() * (S - 6);
+    const y = 3 + rnd() * (S - 6);
+    g.fillStyle = rnd() < 0.5 ? "rgba(255,246,230,0.035)" : "rgba(0,0,0,0.06)";
+    g.fillRect(x, y, 1.5, 1.5);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 /** A soft radial-gradient blob used as a fake contact shadow under actors. */
@@ -540,10 +933,10 @@ function makeBuilding(
   hit.userData.pick = true;
   g.add(hit);
 
-  // Name plate above the building.
-  const label = makeLabelSprite(def.name, track);
-  label.position.set(0, BLD_BASE_Y + BLD_H + 0.55, 0);
-  vis.add(label);
+  // No name plate here any more: the DOM hotspot overlay draws the label, which
+  // gives it real typography, hover/tap states, live status badges and a
+  // guaranteed-legible size at any camera distance. A canvas sprite could do
+  // none of that.
 
   return { group: g, visual: vis, windows: rimMat, art: sprite };
 }
@@ -570,27 +963,6 @@ function makeTorch(
   t.add(light);
   registry.push({ light, base: 2.4, phase: registry.length * 1.7 });
   return t;
-}
-
-function makeLabelSprite(text: string, track: <T extends { dispose: () => void }>(x: T) => T): THREE.Sprite {
-  const c = document.createElement("canvas");
-  c.width = 512;
-  c.height = 128;
-  const ctx = c.getContext("2d")!;
-  ctx.font = "bold 64px system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.lineWidth = 8;
-  ctx.strokeStyle = "rgba(0,0,0,0.85)";
-  ctx.fillStyle = "#ffe9b0";
-  ctx.strokeText(text, 256, 64);
-  ctx.fillText(text, 256, 64);
-  const tex = track(new THREE.CanvasTexture(c));
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = track(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(2.6, 0.65, 1);
-  return sprite;
 }
 
 function makeDust(track: <T extends { dispose: () => void }>(x: T) => T): THREE.Points {

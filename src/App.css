@@ -33,54 +33,6 @@ body {
   padding: 18px 16px 60px;
 }
 
-/* ---------- header ---------- */
-.top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-.brand { display: flex; align-items: center; gap: 14px; }
-.hero-frame {
-  width: 58px;
-  height: 58px;
-  border-radius: 14px;
-  padding: 3px;
-  background: linear-gradient(145deg, var(--gold), #7a5410);
-  box-shadow: 0 0 20px -3px var(--gold);
-  flex: none;
-}
-.hero-emblem {
-  width: 100%;
-  height: 100%;
-  border-radius: 11px;
-  object-fit: cover;
-  display: block;
-}
-.brand h1 {
-  font-family: var(--font-head);
-  font-size: 30px;
-  margin: 0;
-  letter-spacing: 0.5px;
-  color: var(--gold);
-  text-shadow: 0 2px 0 #000, 0 0 22px rgba(255, 194, 51, 0.5);
-}
-.tagline { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
-.track-badge { display: flex; gap: 8px; flex-wrap: wrap; }
-.track-badge span {
-  font-size: 11px;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  font-weight: 700;
-  padding: 6px 11px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  background: rgba(176, 114, 255, 0.12);
-  color: #d9c6ff;
-}
-
 /* ---------- resource chips ---------- */
 .resources {
   /* Chip count is dynamic (wounded/renown/crate appear conditionally). A grid
@@ -790,7 +742,6 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
   /* Two per row on phones. */
   .chip-stat { flex-basis: 44%; }
   .tabs button, .tabs .tab-locked { flex-basis: 44%; font-size: 13px; }
-  .brand h1 { font-size: 24px; }
   .vault-body, .vault-floor { padding-left: 58px; }
   .elevator { width: 34px; }
 }
@@ -1447,44 +1398,6 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 }
 @media (prefers-reduced-motion: reduce) { .lv-toast { animation: none; } .xp-bar > i { transition: none; } }
 
-/* ================= KINGDOM MAP (DFK-style home) ================= */
-.kingdom-head { text-align: center; margin: 2px 0 12px; }
-.kingdom-head h2 {
-  font-family: var(--font-head); color: var(--gold); font-size: 28px; margin: 0;
-  text-shadow: 0 2px 0 #000, 0 0 22px rgba(255, 194, 51, 0.4);
-}
-.kingdom-head span { color: var(--brass); letter-spacing: 3px; font-size: 12px; text-transform: uppercase; }
-.kingdom-stage {
-  max-width: 560px; margin: 0 auto; border-radius: 18px; overflow: hidden;
-  border: 3px solid #000; box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
-  background: radial-gradient(70% 70% at 50% 40%, #2a1e4a, #0b0814);
-}
-/* The map is square, so unbounded width ate the whole viewport and pushed every
-   building button below the fold. Bound it by viewport height instead. */
-.kingdom-map {
-  width: 100%; display: block;
-  height: auto; max-height: min(46vh, 400px);
-  object-fit: contain;
-}
-.kingdom-nav {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 12px; margin-top: 16px;
-}
-.kb {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 12px 10px 10px; cursor: pointer; border: 2px solid #000; border-radius: 14px;
-  background: linear-gradient(180deg, #241a3a, #140f24);
-  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.4); transition: 0.14s;
-}
-.kb:hover { transform: translateY(-3px); box-shadow: 0 9px 0 rgba(0, 0, 0, 0.4), 0 0 24px -6px var(--gold); border-color: var(--gold-dim, #a9843a); }
-.kb:active { transform: translateY(2px); box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4); }
-.kb-ico { width: 92px; height: 92px; display: grid; place-items: center; }
-.kb-ico img { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.6)); }
-.kb-name { font-family: var(--font-head); font-size: 15px; color: #fff; }
-.kb-sub { font-size: 11px; color: var(--muted); }
-.subnav { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
-.subnav-title { font-family: var(--font-head); color: var(--gold); font-size: 18px; }
-
 /* ================= 3D KINGDOM (live Three.js world) ================= */
 .game-world {
   position: relative;
@@ -1556,6 +1469,16 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .adm-note.warn { color: #ff9a8a; }
 .adm-dim { color: #6f6684; }
 .adm-small { font-size: 10px; }
+
+/* Self-test failure text: wraps freely — assertion messages are long and the
+   whole point is being able to read them without a devtools trip. */
+.adm-fail-detail {
+  color: #ff9a8a;
+  font-size: 10px;
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 /* KPI tiles */
 .adm-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; margin: 10px 0; }

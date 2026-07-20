@@ -1,0 +1,129 @@
+/* ============================================================================
+   Idle Legion — design tokens
+   ----------------------------------------------------------------------------
+   The single source of truth for spacing, radii, type, elevation, motion and
+   semantic colour. Nothing in the UI layer should contain a raw pixel value
+   that isn't a token; the audit found eleven radii and twelve font sizes in
+   free circulation, which is why every panel looked like a different product.
+
+   Palette intent — dark Roman apocalypse:
+     gold   = wealth, production, the primary action
+     violet = arcane, prestige, the surrounding world
+     green  = ready / safe          red = incident / danger
+   Legacy names (--gold, --purple, --panel, --font-head…) live in App.css and
+   are deliberately NOT redefined here, so old and new styles stay in sync.
+   ========================================================================== */
+
+:root {
+  /* ---- spacing: 4px base, named by step so intent survives refactors ---- */
+  --s-0: 0;
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 8px;
+  --s-4: 12px;
+  --s-5: 16px;
+  --s-6: 20px;
+  --s-7: 24px;
+  --s-8: 32px;
+  --s-9: 40px;
+  --s-10: 56px;
+
+  /* ---- radii: four steps, plus the pill ---- */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+
+  /* ---- type scale (1.2 minor third, rounded to the pixel grid) ---- */
+  --t-2xs: 10px;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-md: 14px;
+  --t-lg: 16px;
+  --t-xl: 20px;
+  --t-2xl: 26px;
+  --t-3xl: 34px;
+
+  --lh-tight: 1.15;
+  --lh-snug: 1.35;
+  --lh-body: 1.55;
+
+  /* Weights. The display face (Cinzel) only ever carries 600/700 — using it
+     for body copy is what made headings stop reading as headings. */
+  --w-body: 400;
+  --w-med: 600;
+  --w-bold: 700;
+  --w-black: 800;
+
+  /* ---- surfaces: three depths, all translucent so the world shows through --- */
+  --surface-0: rgba(12, 8, 20, 0.72); /* glass over the 3D scene */
+  --surface-1: linear-gradient(180deg, #1a1428, #110c1c);
+  --surface-2: linear-gradient(180deg, #221a34, #171024);
+  --surface-sunken: rgba(0, 0, 0, 0.3);
+  --surface-hover: rgba(255, 255, 255, 0.06);
+
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --line-gold: rgba(255, 194, 51, 0.42);
+
+  /* ---- elevation ---- */
+  --e-1: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --e-2: 0 8px 22px rgba(0, 0, 0, 0.45);
+  --e-3: 0 18px 44px rgba(0, 0, 0, 0.6);
+  --glow-gold: 0 0 20px -4px rgba(255, 194, 51, 0.75);
+  --glow-violet: 0 0 20px -4px rgba(176, 114, 255, 0.75);
+  --glow-ready: 0 0 18px -3px rgba(95, 227, 138, 0.85);
+  --glow-danger: 0 0 18px -3px rgba(255, 90, 72, 0.85);
+
+  /* ---- semantic colour ---- */
+  --fg: #f4eefb;
+  --fg-muted: #c0b6d4; /* lifted from #b3a9c8 — the old value failed AA on panel */
+  --fg-faint: #8d84a3;
+  --fg-on-gold: #2a1c02;
+
+  --accent: #ffc233; /* gold — production & primary action */
+  --accent-2: #b072ff; /* violet — arcane, prestige, world */
+  --ok: #5fe38a;
+  --warn: #ffcf6b;
+  --danger: #ff5a48;
+  --info: #35d5e8;
+
+  /* ---- motion ---- */
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out-back: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  /* ---- layout ---- */
+  --hud-h: 58px;
+  --nav-h: 62px; /* mobile bottom bar */
+  --rail-w: 84px; /* desktop side rail */
+  --shell-max: 1560px;
+
+  /* ---- z layers: named so nothing invents a 9999 again ---- */
+  --z-world: 1;
+  --z-world-overlay: 5;
+  --z-hud: 40;
+  --z-nav: 45;
+  --z-drawer: 60;
+  --z-modal: 80;
+  --z-toast: 90;
+}
+
+/* Touch targets need more room than a mouse does; bump the scale rather than
+   patching individual components at the breakpoint. */
+@media (pointer: coarse) {
+  :root {
+    --nav-h: 68px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+  }
+}
