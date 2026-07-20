@@ -70,6 +70,7 @@ import {
   markCloudSynced,
   saveCloud,
   setCloudIdentity,
+  type CloudSave,
   type Identity,
 } from "../lib/cloudSave";
 
@@ -92,6 +93,13 @@ export function useGame() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // Whether the welcome-back (offline earnings) report has already been shown
+  // this session — see adoptCloud.
+  const offlineShownRef = useRef(state.offlineSummary != null);
+  useEffect(() => {
+    if (state.offlineSummary) offlineShownRef.current = true;
+  }, [state.offlineSummary]);
 
   // The 4Hz tick advances the sim only. It deliberately does NOT persist:
   // serializing + hashing the whole save 4x/second cost up to 5.6ms/s of main
@@ -143,6 +151,20 @@ export function useGame() {
     return outcome === "loaded" || outcome === "recovered";
   }, []);
 
+  /**
+   * Adopt a cloud save: round-trip through local save/load so it gets the same
+   * merge + offline catch-up as a normal boot. The welcome-back report is shown
+   * at most ONCE per session — adopting re-runs offline catch-up, and a second
+   * report seconds after the player dismissed the first reads as a modal that
+   * refuses to stay closed. The earnings still apply; only the report is dropped.
+   */
+  const adoptCloud = useCallback((cloud: CloudSave) => {
+    saveState(cloud.state);
+    const next = loadState();
+    setState(offlineShownRef.current ? clearOfflineSummary(next) : next);
+    markCloudSynced(cloud.savedAt);
+  }, []);
+
   const reconcileCloud = useCallback(async () => {
     const gen = ++reconcileGen.current;
     const cloud = await loadCloud();
@@ -150,23 +172,17 @@ export function useGame() {
 
     if (cloud && cloud.savedAt > localSavedAt()) {
       // Cloud is fresher than anything this device synced for this key — adopt.
-      // Round-trip through local save/load so it gets the same merge +
-      // offline-catch-up as a normal boot.
-      saveState(cloud.state);
-      setState(loadState());
-      markCloudSynced(cloud.savedAt);
+      adoptCloud(cloud);
     } else if (localIsTrustworthy()) {
       // Local is authoritative — push it up so the cloud reflects it.
       await saveCloud(stateRef.current);
     } else if (cloud) {
       // We have nothing trustworthy locally but the cloud has something: take it
       // rather than overwriting it with a blank account.
-      saveState(cloud.state);
-      setState(loadState());
-      markCloudSynced(cloud.savedAt);
+      adoptCloud(cloud);
     }
     hydratedRef.current = true;
-  }, [localIsTrustworthy]);
+  }, [localIsTrustworthy, adoptCloud]);
 
   useEffect(() => {
     void reconcileCloud();

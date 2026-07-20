@@ -17,6 +17,7 @@
 // never re-adopts its own save, but a fresher save from elsewhere is picked up.
 
 import { operatorId } from "./insforge";
+import { cachedToken } from "./session";
 import type { GameState } from "../game/types";
 
 const BASE =
@@ -40,13 +41,28 @@ export function setCloudIdentity(next: Identity) {
   identity = { ...identity, ...next };
 }
 
-/** The stable key this player's save is stored under (see precedence above). */
+/**
+ * The stable key this player's save is stored under.
+ *
+ * SECURITY: this deliberately keys on the WALLET ADDRESS, not the email.
+ * `email:<address>` was guessable, and the endpoint runs with the admin key —
+ * so knowing someone's email was enough to read their save (with PII) or
+ * overwrite it. The address is the only identity the server can actually verify
+ * (the player signs a statement with it; see lib/session.ts), so the key must be
+ * exactly what a verified token asserts (`wallet:<addr>`) for the check to work.
+ *
+ * Anonymous players keep an unguessable random `device:` key — nothing to guess,
+ * so no proof is required and offline play needs no wallet.
+ */
 export function playerKey(): string {
-  const email = identity.email?.trim().toLowerCase();
-  if (email) return `email:${email}`;
   const wallet = identity.walletAddress?.trim().toLowerCase();
   if (wallet) return `wallet:${wallet}`;
   return `device:${operatorId()}`;
+}
+
+/** True when the current key is one the server will demand a token for. */
+export function needsAuth(): boolean {
+  return playerKey().startsWith("wallet:");
 }
 
 /**
@@ -82,9 +98,16 @@ async function call<T>(op: string, extra: Record<string, unknown>): Promise<T | 
     const res = await fetch(`${BASE}/functions/cloud-save`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // The last push of a session fires from pagehide/visibilitychange. Without
+      // keepalive the browser cancels it as the tab goes away, so the tail of a
+      // session was regularly lost.
+      keepalive: true,
       body: JSON.stringify({
         op,
         playerKey: playerKey(),
+        // Proof of address ownership. Only required for `wallet:` keys; the
+        // server rejects those without it (see functions/cloud-save.ts).
+        token: cachedToken(identity.walletAddress) ?? undefined,
         email: identity.email ?? null,
         walletAddress: identity.walletAddress ?? null,
         ...extra,
@@ -124,9 +147,22 @@ export async function loadCloud(): Promise<CloudSave | null> {
 export async function saveCloud(state: GameState): Promise<void> {
   if (!BASE) return;
   const savedAt = Date.now();
+  // Mark the sync OPTIMISTICALLY, before the round-trip. A push fired from
+  // pagehide often lands on the server while the tab dies before its response
+  // resolves — leaving this device believing it had never synced, so the very
+  // save it had just written came back as "fresher cloud state" on the next
+  // boot and was re-adopted (which re-ran offline catch-up and re-showed the
+  // welcome-back report). Marking up front is safe: the marker only suppresses
+  // adopting a save at or below this stamp, and a genuinely newer save from
+  // another device carries a later one.
+  const prev = localSavedAt();
+  markCloudSynced(savedAt);
   const r = await call<{ ok: boolean; savedAt?: number }>("save", {
     state: sanitize(state),
     savedAt,
   });
-  if (r?.ok) markCloudSynced(savedAt);
+  // Definitively rejected (stale/invalid/unauthorised) → the cloud holds
+  // something we did not write, so restore the old marker and let the next
+  // reconcile consider adopting it.
+  if (r && !r.ok) markCloudSynced(r.savedAt ?? prev);
 }

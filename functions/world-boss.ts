@@ -29,24 +29,38 @@ const CONTRIB_CAP = 500;
 
 // ---- integrity guards -------------------------------------------------------
 // Damage is still reported by the client (no server-side combat sim), so the
-// leaderboard is protected by three independent ceilings instead of trust:
+// rate is bounded by two ceilings rather than trust:
 //  1. a server-enforced strike cooldown  → can't spam hits
 //  2. a per-hit fraction of boss max HP  → can't one-shot the boss
-//  3. a per-player share of the kill     → can't solo-dominate the payout table
 /** Must match the client's WB_HIT_COOLDOWN_MS (8s), minus a little clock slack. */
 const HIT_COOLDOWN_MS = 7_500;
 /** No single strike may exceed this fraction of the boss's max HP (was 0.5). */
 const MAX_HIT_FRACTION = 0.02;
-/** No single player may account for more than this share of one boss. */
-const MAX_PLAYER_SHARE = 0.4;
 
-// Ranked payout table (index 0 = #1). Everyone else who dealt damage gets the tail.
-const RANK_REWARDS = [
-  { gold: 20_000, legion: 400, lunchboxes: 3 },
-  { gold: 12_000, legion: 240, lunchboxes: 2 },
-  { gold: 8_000, legion: 150, lunchboxes: 1 },
-];
-const PARTICIPATION = { gold: 2_500, legion: 40, lunchboxes: 0 };
+/**
+ * SYBIL RESISTANCE — why there is no per-player share cap and no rank table.
+ *
+ * `player_key` is client-chosen, so any per-key ceiling is evaded by simply
+ * using more keys. The previous design made that *profitable twice over*:
+ *   - a rank table paying 20k/12k/8k meant one attacker splitting damage across
+ *     three keys collected 40k instead of 20k — it paid to Sybil;
+ *   - a 40% per-key share cap made it MANDATORY to split in order to claim more
+ *     than 40% of a boss you could otherwise have soloed. The cap manufactured
+ *     the very behaviour it was meant to stop.
+ *
+ * Rewards are now a pure function of your share of total damage, with no rank
+ * component and no per-key cap. Splitting X damage across N keys yields N shares
+ * that sum to exactly the same payout as one key dealing X — Sybil becomes
+ * economically neutral, so there is nothing to defend against. Identity
+ * verification would also work, but this holds even for anonymous players.
+ */
+const CYCLE_POOL = { gold: 45_000, legion: 900, lunchboxes: 6 };
+/**
+ * Contributors below this share get nothing — stops thousands of dust rows
+ * (each of which would otherwise cost a row and a claim) without creating a
+ * flat per-identity payout that could be farmed.
+ */
+const MIN_REWARD_SHARE = 0.005;
 
 function bossHpForTier(tier: number): number {
   return Math.floor(BASE_HP * Math.pow(1 + HP_GROWTH, tier - 1));
@@ -85,7 +99,7 @@ async function pendingReward(admin: Admin, playerKey: string) {
     .eq("player_key", playerKey)
     .eq("claimed", false);
   const rows = (data ?? []) as { gold: number; legion: number; lunchboxes: number }[];
-  return rows.reduce(
+  return rows.reduce<{ gold: number; legion: number; lunchboxes: number; cycles: number }>(
     (a, r) => ({ gold: a.gold + Number(r.gold), legion: a.legion + Number(r.legion), lunchboxes: a.lunchboxes + Number(r.lunchboxes), cycles: a.cycles + 1 }),
     { gold: 0, legion: 0, lunchboxes: 0, cycles: 0 },
   );
@@ -121,21 +135,30 @@ async function ensureBoss(admin: Admin, now: number, playerKey: string) {
   let resolved: Resolved | null = null;
   if (iReset) {
     // Snapshot every contributor and write their server-computed reward.
+    // Payout is a pure damage-share of a fixed cycle pool (see CYCLE_POOL): the
+    // total paid out is the same no matter how many keys the damage arrives on,
+    // which is what makes Sybil pointless rather than merely bounded.
     const all = await leaderboardFor(admin, closing, CONTRIB_CAP);
-    const rows = all.map((r, i) => {
-      const base = i < RANK_REWARDS.length ? RANK_REWARDS[i] : PARTICIPATION;
-      return {
-        week: closing,
-        player_key: r.player_key,
-        rank: i + 1,
-        field: all.length,
-        gold: base.gold * defeatedTier,
-        legion: base.legion * defeatedTier,
-        lunchboxes: base.lunchboxes,
-        claimed: false,
-        created_at: new Date().toISOString(),
-      };
-    });
+    const total = all.reduce((sum, r) => sum + Number(r.contributed || 0), 0);
+    const rows = total > 0
+      ? all
+          .map((r, i) => {
+            const share = Number(r.contributed || 0) / total;
+            return { r, i, share };
+          })
+          .filter(({ share }) => share >= MIN_REWARD_SHARE)
+          .map(({ r, i, share }) => ({
+            week: closing,
+            player_key: r.player_key,
+            rank: i + 1,
+            field: all.length,
+            gold: Math.floor(CYCLE_POOL.gold * defeatedTier * share),
+            legion: Math.floor(CYCLE_POOL.legion * defeatedTier * share * 100) / 100,
+            lunchboxes: Math.floor(CYCLE_POOL.lunchboxes * share),
+            claimed: false,
+            created_at: new Date().toISOString(),
+          }))
+      : [];
     if (rows.length) await admin.database.from("world_boss_reward").upsert(rows, { onConflict: "week,player_key" });
     const idx = all.findIndex((r) => r.player_key === playerKey);
     if (idx >= 0) resolved = { week: closing, rank: idx + 1, field: all.length, tier: defeatedTier };
@@ -227,13 +250,15 @@ export default async function (req: Request): Promise<Response> {
     // (2) Per-hit plausibility ceiling — no one-shotting the boss.
     damage = Math.min(damage, boss.max_hp * MAX_HIT_FRACTION);
 
-    // (3) Per-player share cap — no soloing the ranked payout table.
+    // NOTE: there is deliberately NO per-player share cap here any more.
+    // It was strictly counter-productive: because `player_key` is client-chosen,
+    // the cap could never actually bind an attacker (rotate keys), while it did
+    // bind honest players — and in doing so it made splitting across keys the
+    // only way to claim more than 40% of a boss. It manufactured Sybil pressure
+    // and defended nothing. With share-proportional payouts (see CYCLE_POOL)
+    // there is no advantage to splitting, so no cap is needed. The cooldown and
+    // per-hit ceiling still bound the achievable damage RATE.
     const priorTotal = prior ? Number(prior.contributed) : 0;
-    const allowance = Math.max(0, boss.max_hp * MAX_PLAYER_SHARE - priorTotal);
-    damage = Math.min(damage, allowance);
-    if (damage <= 0) {
-      return json({ error: "contribution cap reached for this boss", capped: true }, 429);
-    }
 
     const newHp = Math.max(0, Number(boss.hp) - damage);
     await admin.database.from("world_boss").update({ hp: newHp, updated_at: new Date().toISOString() }).eq("id", 1);

@@ -57,6 +57,58 @@ const json = (body: unknown, status = 200) =>
 // Guard against a runaway payload — a legit save is a few KB of jsonb.
 const MAX_STATE_BYTES = 512 * 1024;
 
+// ---- session-token verification (issued by the `auth` function) --------------
+
+/**
+ * Keys that name a real-world identity, and are therefore guessable by anyone
+ * who knows the player's email or address. These require proof; anonymous
+ * `device:<random>` keys do not (nothing to guess).
+ */
+function isIdentityKey(key: string): boolean {
+  return /^(email|wallet|magic):/i.test(key);
+}
+
+function b64urlToBytes(s: string): Uint8Array {
+  const pad = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(pad + "=".repeat((4 - (pad.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+/** Constant-time-ish compare so a token can't be brute-forced byte by byte. */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Verify `<b64url(json)>.<hmac>` against the server secret. Null = not valid. */
+async function verifyToken(token: string): Promise<{ sub: string; exp: number } | null> {
+  if (!token || !token.includes(".")) return null;
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig) return null;
+  try {
+    const secret = Deno.env.get("API_KEY") ?? "";
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+    const expected = btoa(String.fromCharCode(...new Uint8Array(mac)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    if (!safeEqual(expected, sig)) return null;
+    const claim = JSON.parse(new TextDecoder().decode(b64urlToBytes(payload)));
+    if (typeof claim?.sub !== "string" || typeof claim?.exp !== "number") return null;
+    if (Date.now() > claim.exp) return null; // expired
+    return { sub: claim.sub, exp: claim.exp };
+  } catch {
+    return null;
+  }
+}
+
 export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -71,6 +123,24 @@ export default async function (req: Request): Promise<Response> {
   const op = String(body.op || "");
   const playerKey = String(body.playerKey || "").slice(0, 200);
   if (!playerKey) return json({ error: "playerKey required" }, 400);
+
+  // ---- AUTHORISATION ---------------------------------------------------------
+  // Identity-shaped keys (`email:` / `wallet:` / `magic:`) are GUESSABLE, and this
+  // handler runs with the admin key. Anyone who knew a player's email could read
+  // their full save (with email + wallet PII) or overwrite their progress. Those
+  // keys now require a session token from the `auth` function, which is only
+  // issued against a verified EIP-191 signature from that address.
+  //
+  // Anonymous `device:` keys stay open: they're high-entropy random ids that are
+  // never published, so there is no name for an attacker to guess, and requiring
+  // a wallet just to play offline would be hostile.
+  const claim = await verifyToken(String(body.token || ""));
+  if (isIdentityKey(playerKey)) {
+    if (!claim) return json({ error: "authentication required for this account" }, 401);
+    if (claim.sub.toLowerCase() !== playerKey.toLowerCase()) {
+      return json({ error: "token does not match this account" }, 403);
+    }
+  }
 
   const admin = createAdminClient({
     baseUrl: Deno.env.get("INSFORGE_BASE_URL"),

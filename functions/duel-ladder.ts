@@ -20,6 +20,32 @@ const json = (b: unknown, s = 200) =>
 const OPP_COUNT = 3;
 type Admin = ReturnType<typeof createAdminClient>;
 
+// ---- opaque opponent handles -------------------------------------------------
+//
+// `player_key` is the caller's ARENA SECRET: world-boss `op:"claim"` and this
+// endpoint's `op:"sync"` authenticate on nothing else. Returning opponents' raw
+// keys handed every caller the credentials to claim their boss rewards and
+// overwrite their ladder row — and since each sync returns three more, it walked
+// the whole board. Opponents are now exposed as a salted, one-way handle: stable
+// enough for a React key, useless as a credential.
+const handleCache = new Map<string, string>();
+async function oppHandle(playerKey: string): Promise<string> {
+  const cached = handleCache.get(playerKey);
+  if (cached) return cached;
+  const secret = Deno.env.get("API_KEY") ?? "";
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`opp:${playerKey}`));
+  const hex = Array.from(new Uint8Array(mac).slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+  handleCache.set(playerKey, hex);
+  return hex;
+}
+
 type Row = {
   player_key: string;
   name: string;
@@ -55,9 +81,9 @@ async function myRank(admin: Admin, rating: number): Promise<number> {
   return (Array.isArray(data) ? data.length : 0) + 1;
 }
 
-function shapeOpp(r: Row) {
+async function shapeOpp(r: Row) {
   return {
-    playerKey: r.player_key,
+    oppId: await oppHandle(r.player_key),
     name: r.name,
     rating: r.rating,
     power: r.power,
@@ -166,7 +192,7 @@ export default async function (req: Request): Promise<Response> {
   const rank = await myRank(admin, rating);
   const { data: totalRows } = await admin.database.from("duel_ladder").select("player_key");
   return json({
-    opponents: opps.map(shapeOpp),
+    opponents: await Promise.all(opps.map(shapeOpp)),
     rank,
     field: Array.isArray(totalRows) ? totalRows.length : 1,
   });

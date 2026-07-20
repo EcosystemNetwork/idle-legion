@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 
 // Heavy Three.js Arena boss viewer — code-split so three.js stays out of the
@@ -8,7 +8,6 @@ const BossStage = lazy(() => import("./components/BossStage"));
 const GameWorld = lazy(() => import("./components/GameWorld"));
 // Dev/admin "see everything" overlay — code-split so it never ships in the main view.
 const AdminPanel = lazy(() => import("./components/AdminPanel"));
-import KingdomMap from "./components/KingdomMap";
 import Actor from "./components/Actor";
 import { INTERIOR } from "./game/interiors";
 import { RoomKek } from "./components/RoomScene";
@@ -119,7 +118,7 @@ import {
 } from "./game/engine";
 import { useGame } from "./hooks/useGame";
 import { useWallet } from "./hooks/useWallet";
-import type { CombatClass, Dweller, GameState, Gene, GearItem, GearSlot, LandKind, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Room, Tier } from "./game/types";
+import type { CombatClass, Dweller, GameState, Gene, GearItem, GearSlot, LandKind, LevelUpEvent, OfflineSummary, OnchainListing, RaidReport, Rarity, Room, Tier } from "./game/types";
 import {
   claimMirror,
   completeMission,
@@ -153,6 +152,7 @@ import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juic
 import { useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
 import { MuteButton } from "./fx/MuteButton";
 import { analyticsOptedOut, flush, identify, initTelemetry, markLogin, setAnalyticsOptOut, setScreen } from "./lib/telemetry";
+import { clearSession, ensureSession } from "./lib/session";
 
 const GOLD_CHIP = ".chip-stat.gold";
 
@@ -323,13 +323,26 @@ function PrivacyNote() {
   );
 }
 
+// Placeholder while the 3D kingdom chunk loads. With `note`, it's the resting
+// state for players without WebGL — the tab bar above is their navigation, so
+// there's no 2D map any more.
+function KingdomLoading({ note }: { note?: string }) {
+  return (
+    <section className="game-world">
+      <div className={`gw-veil${note ? " static" : ""}`} aria-label={note ?? "Entering the kingdom…"}>
+        {note && <p className="gw-note">{note}</p>}
+      </div>
+    </section>
+  );
+}
+
 // ---------------- App ----------------
 
 export default function App() {
   const game = useGame();
   const { state, stats, error: gameError, now, actions, syncIdentity } = game;
   const wallet = useWallet();
-  const [tab, setTab] = useState<Tab>("stronghold");
+  const [tab, setTab] = useState<Tab>("kingdom");
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
   const [heroId, setHeroId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Pull | null>(null);
@@ -367,9 +380,17 @@ export default function App() {
   useEffect(() => {
     if (wallet.session) {
       markLogin(wallet.session.email ?? null, wallet.session.address);
-      syncIdentity({ email: wallet.session.email ?? null, walletAddress: wallet.session.address });
+      // Obtain proof-of-address BEFORE repointing the cloud key. A `wallet:` key
+      // is rejected by the server without a session token, so signing first means
+      // the very first reconcile already carries it. One prompt per ~12h; if the
+      // player declines we simply stay on the anonymous device key.
+      const { address, signer, email } = wallet.session;
+      void ensureSession(signer, address).finally(() => {
+        syncIdentity({ email: email ?? null, walletAddress: address });
+      });
     } else {
       identify({ email: null, walletAddress: null });
+      clearSession();
       syncIdentity({ email: null, walletAddress: null });
     }
   }, [wallet.session, syncIdentity]);
@@ -486,23 +507,6 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="top">
-        <div className="brand">
-          <span className="hero-frame">
-            <img className="hero-emblem" src={IMG.hero} alt="Champion" />
-          </span>
-          <div>
-            <h1>Idle Legion</h1>
-            <p className="tagline">They rugged the Surface. So we dug. · Raise a legion, raid the Wastes, stay Kekius — funded on-chain</p>
-          </div>
-        </div>
-        <div className="track-badge">
-          <span>Particle UA · EIP-7702</span>
-          <span>Arbitrum</span>
-          <span>Magic</span>
-        </div>
-      </header>
-
       <ResourceBar state={state} stats={stats} wallet={wallet} onCollectAll={actions.collectAll} onOpenBox={openBox} onHealAll={actions.healAll} />
 
       <DailyBanner state={state} now={now} onClaim={handleClaimDaily} />
@@ -586,11 +590,13 @@ export default function App() {
       )}
 
       {tab === "kingdom" && (
-        <Suspense fallback={<KingdomMap onEnter={(id) => setTab(id as Tab)} />}>
+        <Suspense fallback={<KingdomLoading />}>
           <GameWorld
             onEnter={(id) => setTab(id as Tab)}
             dwellers={state.dwellers.length}
-            fallback={<KingdomMap onEnter={(id) => setTab(id as Tab)} />}
+            fallback={
+              <KingdomLoading note="3D unavailable on this device — use the tabs above to move around the kingdom." />
+            }
           />
         </Suspense>
       )}
@@ -757,42 +763,59 @@ function ResourceBar({
   const goldShown = useCountUp(state.gold);
   return (
     <section className="resources">
-      <Chip cls="gold" img={KIT.res.gold} v={formatNum(goldShown)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
+      <Chip cls="gold" img={KIT.res.gold} cap="Gold" v={formatNum(goldShown)} s={`+${stats.goldPerSec.toFixed(1)}/s`} />
       <Chip
         cls={`prov ${stats.fed ? "" : "warn"}`}
         img={KIT.res.provisions}
+        cap={stats.fed ? "Provisions" : "Starving"}
         v={formatNum(state.provisions)}
-        s={`${stats.provisionsPerSec >= 0 ? "+" : ""}${stats.provisionsPerSec.toFixed(2)}/s${stats.fed ? "" : " · STARVING"}`}
+        s={`${stats.provisionsPerSec >= 0 ? "+" : ""}${stats.provisionsPerSec.toFixed(2)}/s`}
       />
       <Chip
         cls={`salves ${stats.woundedCount > 0 && state.salves <= 0 ? "warn" : ""}`}
         img={KIT.res.crystal}
+        cap="Salves"
         v={formatNum(state.salves)}
         s={`⛑ ${stats.salvesPerSec >= 0 ? "+" : ""}${stats.salvesPerSec.toFixed(2)}/s`}
       />
       <Chip
         cls="legion-tok"
         icon="💠"
+        cap="$LEGION"
         v={formatNum(state.legion)}
-        s={`$LEGION ${stats.legionPerSec > 0 ? `+${stats.legionPerSec.toFixed(2)}/s` : ""}`.trim()}
+        s={stats.legionPerSec > 0 ? `+${stats.legionPerSec.toFixed(2)}/s` : "—"}
       />
-      <Chip cls="pop" icon="🛡️" v={`${stats.population}/${maxPopulation(state)}`} s={`${stats.idleCount} idle`} />
-      <Chip cls="might" icon="⚔️" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
+      <Chip
+        cls="pop"
+        icon="🛡️"
+        cap="Population"
+        v={`${stats.population}/${maxPopulation(state)}`}
+        s={`${stats.idleCount} idle`}
+      />
+      <Chip cls="might" icon="⚔️" cap="Might" v={`${Math.floor(stats.might)}`} s={`${state.totalRaids} raids`} />
       {stats.woundedCount > 0 && (
         <button className="chip-stat wounded hot" onClick={onHealAll} title="Heal all wounded with salves">
           <span className="ci">⛑️</span>
           <span className="cv">
+            <span className="cap">Wounded</span>
             <b>{stats.woundedCount}</b>
             <small>heal all</small>
           </span>
         </button>
       )}
       {state.renown > 0 && (
-        <Chip cls="renown" icon="🏅" v={`${state.renown}`} s={`+${Math.round(renownBoost(state) * 100)}% output`} />
+        <Chip
+          cls="renown"
+          icon="🏅"
+          cap="Renown"
+          v={`${state.renown}`}
+          s={`+${Math.round(renownBoost(state) * 100)}% output`}
+        />
       )}
       <button className={`chip-stat gift ${state.lunchboxes > 0 ? "hot" : ""}`} onClick={onOpenBox} disabled={state.lunchboxes <= 0}>
         <span className="ci"><img className="ci-img" src={KIT.res.lunchbox} alt="" /></span>
         <span className="cv">
+          <span className="cap">Crates</span>
           <b>{state.lunchboxes}</b>
           <small>open crate</small>
         </span>
@@ -800,6 +823,7 @@ function ResourceBar({
       <Chip
         cls="onchain"
         icon="🔗"
+        cap="Balance"
         v={wallet.totalUsd == null ? (wallet.session ? "…" : "—") : `$${wallet.totalUsd.toFixed(2)}`}
         s={wallet.session ? shortAddr(wallet.session.address) : "offline"}
       />
@@ -820,11 +844,19 @@ function ResourceBar({
   );
 }
 
-function Chip({ cls, icon, img, v, s }: { cls: string; icon?: string; img?: string; v: string; s: string }) {
+function Chip({
+  cls,
+  icon,
+  img,
+  cap,
+  v,
+  s,
+}: { cls: string; icon?: string; img?: string; cap: string; v: string; s: string }) {
   return (
     <div className={`chip-stat ${cls}`}>
       <span className="ci">{img ? <img className="ci-img" src={img} alt="" /> : icon}</span>
       <span className="cv">
+        <span className="cap">{cap}</span>
         <b>{v}</b>
         <small>{s}</small>
       </span>
@@ -1356,19 +1388,36 @@ function RaidReportModal({ report, onClose }: { report: RaidReport; onClose: () 
 
 // ---------------- level-up celebration ----------------
 
-// Drains the engine's level-up queue: fires particles/sound for each fresh
-// event (staggered), stacks toasts, then clears the queue after a quiet beat.
-function LevelUpLayer({ events, onDrain }: { events: LevelUpEvent[]; onDrain: () => void }) {
-  const shown = useRef<Set<string>>(new Set());
+// How long a single toast stays on screen before it expires on its own.
+const LV_TOAST_MS = 6000;
 
-  // Play juice for events we haven't celebrated yet.
+// Drains the engine's level-up queue: fires particles/sound for each fresh
+// event (staggered) and hands the toast to local state. Each toast owns its own
+// expiry timer and can be clicked away, so a steady drip of level-ups can never
+// pin an old toast on screen (the engine queue is emptied the moment we read it).
+function LevelUpLayer({ events, onDrain }: { events: LevelUpEvent[]; onDrain: () => void }) {
+  const [toasts, setToasts] = useState<LevelUpEvent[]>([]);
+  const timers = useRef<Map<string, number>>(new Map());
+
+  const dismiss = useCallback((id: string) => {
+    const t = timers.current.get(id);
+    if (t !== undefined) {
+      window.clearTimeout(t);
+      timers.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
+  // onDrain is held in a ref and kept OUT of the deps: it's a fresh arrow on
+  // every App render, and App re-renders 4x/second from the game tick.
+  const drainRef = useRef(onDrain);
+  drainRef.current = onDrain;
+
   useEffect(() => {
-    const fresh = events.filter((e) => !shown.current.has(e.id));
-    if (fresh.length === 0) return;
+    if (events.length === 0) return;
     const cx = window.innerWidth / 2;
     const cy = Math.min(180, window.innerHeight * 0.22);
-    fresh.forEach((e, i) => {
-      shown.current.add(e.id);
+    events.forEach((e, i) => {
       window.setTimeout(() => {
         if (e.milestone) {
           shake(9);
@@ -1384,30 +1433,33 @@ function LevelUpLayer({ events, onDrain }: { events: LevelUpEvent[]; onDrain: ()
           sfx.levelup();
         }
       }, i * 240);
+      timers.current.set(e.id, window.setTimeout(() => dismiss(e.id), LV_TOAST_MS + i * 240));
     });
-  }, [events]);
+    setToasts((prev) => [...prev.filter((p) => !events.some((e) => e.id === p.id)), ...events].slice(-4));
+    // Empty the engine queue immediately — the toasts live here now.
+    drainRef.current();
+  }, [events, dismiss]);
 
-  // Clear the queue (and the shown-set) after the last event has had its moment.
-  // onDrain is held in a ref and kept OUT of the deps: it's a fresh arrow on
-  // every App render, and App re-renders 4x/second from the game tick, so
-  // depending on it re-armed this timeout before it could ever elapse — the
-  // toasts stayed pinned on screen for the rest of the session.
-  const drainRef = useRef(onDrain);
-  drainRef.current = onDrain;
+  // Drop every pending timer if the layer unmounts.
   useEffect(() => {
-    if (events.length === 0) {
-      shown.current.clear();
-      return;
-    }
-    const t = window.setTimeout(() => drainRef.current(), events.length * 240 + 2400);
-    return () => window.clearTimeout(t);
-  }, [events]);
+    const pending = timers.current;
+    return () => {
+      pending.forEach((t) => window.clearTimeout(t));
+      pending.clear();
+    };
+  }, []);
 
-  if (events.length === 0) return null;
+  if (toasts.length === 0) return null;
   return (
     <div className="levelup-toasts" aria-live="polite">
-      {events.slice(-4).map((e) => (
-        <div key={e.id} className={`lv-toast ${e.milestone ? "milestone" : ""}`}>
+      {toasts.map((e) => (
+        <button
+          key={e.id}
+          type="button"
+          className={`lv-toast ${e.milestone ? "milestone" : ""}`}
+          onClick={() => dismiss(e.id)}
+          aria-label={`Dismiss ${e.name} level up`}
+        >
           <img src={TIER_PORTRAIT[e.tier]} alt="" />
           <div className="lv-body">
             <b>{e.milestone ? "★ " : ""}{e.name} <span className="muted">leveled up!</span></b>
@@ -1416,7 +1468,7 @@ function LevelUpLayer({ events, onDrain }: { events: LevelUpEvent[]; onDrain: ()
               {e.reward > 0 ? ` · milestone +${e.reward} 🎁` : ""}
             </span>
           </div>
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -2270,131 +2322,221 @@ function MarketView({
   onBuy: (l: OnchainListing) => void;
   onHero: (id: string) => void;
 }) {
-  const inv = inventoryGear(state);
+  const [mode, setMode] = useState<"buy" | "sell">("buy");
+  const [kind, setKind] = useState<"all" | OnchainListing["kind"]>("all");
+  const [rarity, setRarity] = useState<"all" | Rarity>("all");
+  const [sort, setSort] = useState<"rarity" | "cheap" | "dear">("rarity");
+  const [query, setQuery] = useState("");
+
   const canBuy = Boolean(wallet.session && wallet.caps.particle && !wallet.busy);
+  const inv = inventoryGear(state);
+
+  const listings = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const out = ONCHAIN_LISTINGS.filter(
+      (l) =>
+        (kind === "all" || l.kind === kind) &&
+        (rarity === "all" || l.rarity === rarity) &&
+        (q === "" || l.label.toLowerCase().includes(q) || l.sub.toLowerCase().includes(q)),
+    );
+    out.sort((a, b) =>
+      sort === "cheap" ? a.priceUsd - b.priceUsd
+      : sort === "dear" ? b.priceUsd - a.priceUsd
+      : RARITY_META[b.rarity].stars - RARITY_META[a.rarity].stars || b.priceUsd - a.priceUsd,
+    );
+    return out;
+  }, [kind, rarity, sort, query]);
+
   const sellable = [...state.dwellers].sort((a, b) => TIERS[b.tier].might - TIERS[a.tier].might);
+  // Spare gear is worth more as a lump sum — show what the whole pile fetches.
+  const gearPile = inv.reduce((sum, item) => sum + gearSellValue(item.defId), 0);
+
   return (
     <section className="panel market-view">
-      <div className="wc-hero" style={{ backgroundImage: `url(${IMG.chest})` }}>
-        <div className="wc-hero-veil" />
-        <div className="wc-hero-body">
+      <div className="mkt-hero" style={{ backgroundImage: `url(${IMG.chest})` }}>
+        <div className="mkt-hero-veil" />
+        <div className="mkt-hero-body">
           <h2>🏛️ Marketplace · the Bazaar</h2>
-          <p className="muted">
-            Trade gladiators &amp; gear. The bridges died in the Rug — but the <strong>Universal Account</strong> reaches
-            any Chain and settles <strong>cross-chain as USDT on Arbitrum</strong>, the last honest Chain (Particle{" "}
-            <code>EIP-7702</code>). Pay from any chain, no bridge, no chain switch. The whole economy of the deep runs
-            on-chain.
+          <p className="muted small">
+            Trade gladiators &amp; gear. The bridges died in the Rug — the <strong>Universal Account</strong> reaches any
+            Chain and settles <strong>cross-chain as USDT on Arbitrum</strong> (Particle <code>EIP-7702</code>). Pay from
+            any chain. No bridge, no chain switch.
           </p>
         </div>
       </div>
 
-      {/* wallet */}
-      <div className="auth-box">
-        {!wallet.session ? (
-          <>
-            <h3>Connect to trade on-chain</h3>
-            {wallet.caps.magic ? (
-              <form className="email-row" onSubmit={(e) => { e.preventDefault(); if (email.trim()) void wallet.loginMagic(email.trim()); }}>
-                <input type="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                <button type="submit" className="btn" disabled={wallet.busy}>Magic login</button>
-              </form>
-            ) : (
-              <p className="muted small">Set <code>VITE_MAGIC_PUBLISHABLE_KEY</code> for email login.</p>
-            )}
-            <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.loginInjected()}>
-              Connect browser wallet
-            </button>
-          </>
-        ) : (
-          <div className="session">
-            <div>
-              <strong>{wallet.session.method === "magic" ? "Magic" : "Wallet"} · {shortAddr(wallet.session.address)}</strong>
-              {wallet.uaAddress && <div className="muted small">UA / 7702 · {shortAddr(wallet.uaAddress)}</div>}
-              <div className="muted small">Unified balance: {wallet.totalUsd == null ? "…" : `$${wallet.totalUsd.toFixed(2)}`}</div>
-            </div>
-            <div className="session-actions">
-              <button type="button" className="btn secondary" disabled={wallet.busy} onClick={() => void wallet.refreshBalances()}>Refresh</button>
-              <button type="button" className="btn ghost" disabled={wallet.busy} onClick={() => void wallet.logout()}>Logout</button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* on-chain buy */}
-      <h3 className="mk-h">⚡ On-Chain Bazaar · buy with USDT (Universal Accounts → Arbitrum)</h3>
-      {!wallet.caps.particle && (
-        <p className="muted small warn">Add Particle keys in <code>.env</code> to enable live on-chain buys. Everything else plays offline.</p>
-      )}
-      <div className="listing-grid">
-        {ONCHAIN_LISTINGS.map((l) => (
-          <article key={l.id} className="listing" style={{ ["--rar" as string]: RARITY_META[l.rarity].color }}>
-            <img className="listing-img" src={l.img} alt={l.label} loading="lazy" />
-            <div className="listing-body">
-              <div className="listing-name">{l.label}</div>
-              <div className="listing-sub" style={{ color: RARITY_META[l.rarity].color }}>{l.sub}</div>
-            </div>
-            <button type="button" className="btn buy" disabled={!canBuy} onClick={() => onBuy(l)} title={canBuy ? "" : "Connect a wallet with keys to buy on-chain"}>
-              {wallet.busy ? "Routing…" : `＄${l.priceUsd.toFixed(2)} · Buy`}
-            </button>
-          </article>
-        ))}
-      </div>
-      {wallet.lastTx && (
-        <p className="tx-ok">Settled {wallet.lastTx.amount} USDT on Arbitrum · <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">View on UniversalX</a></p>
-      )}
-
-      {/* sell */}
-      <h3 className="mk-h">💰 Sell your assets → gold</h3>
-      <div className="sell-cols">
-        <div>
-          <h4 className="ml">Gladiators</h4>
-          <div className="sell-grid">
-            {sellable.map((d) => (
-              <div key={d.id} className="sell-item" style={{ ["--rar" as string]: RARITY[d.tier].color }}>
-                <img src={TIER_PORTRAIT[d.tier]} alt={d.name} onClick={() => onHero(d.id)} />
-                <div className="sell-info">
-                  <span className="sell-name">{d.name}</span>
-                  <span className="sell-tier" style={{ color: RARITY[d.tier].color }}>{TIERS[d.tier].name} Lv{d.level}</span>
-                </div>
-                <button type="button" className="chip-btn" disabled={state.dwellers.length <= 1} onClick={() => actions.sellHero(d.id)}>
-                  🪙 {formatNum(heroSellValue(d))}
-                </button>
-              </div>
-            ))}
-          </div>
+      {/* one bar: what you can spend, who you are, and which side of the counter you're on */}
+      <div className="mkt-bar">
+        <div className="mkt-purse">
+          <span className="mkt-purse-item gold">🪙 {formatNum(state.gold)}</span>
+          <span className="mkt-purse-item usd">
+            ＄{wallet.totalUsd == null ? (wallet.session ? "…" : "0.00") : wallet.totalUsd.toFixed(2)}
+          </span>
         </div>
-        <div>
-          <h4 className="ml">Gear ({inv.length})</h4>
-          <div className="sell-grid">
-            {inv.length === 0 && <p className="muted small">No spare gear. Open lunchboxes or buy on-chain.</p>}
-            {inv.map((item) => {
-              const g = gearDefOf(item);
+        <div className="mkt-wallet">
+          {!wallet.session ? (
+            <>
+              {wallet.caps.magic && (
+                <form
+                  className="mkt-login"
+                  onSubmit={(e) => { e.preventDefault(); if (email.trim()) void wallet.loginMagic(email.trim()); }}
+                >
+                  <input type="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                  <button type="submit" className="btn buy" disabled={wallet.busy}>Magic login</button>
+                </form>
+              )}
+              <button type="button" className="btn secondary buy" disabled={wallet.busy} onClick={() => void wallet.loginInjected()}>
+                Connect wallet
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="mkt-addr" title={wallet.uaAddress ? `UA / 7702 · ${wallet.uaAddress}` : wallet.session.address}>
+                <i className="live-dot" />
+                {wallet.session.method === "magic" ? "Magic" : "Wallet"} · {shortAddr(wallet.uaAddress ?? wallet.session.address)}
+              </span>
+              <button type="button" className="chip-btn" disabled={wallet.busy} onClick={() => void wallet.refreshBalances()}>↻</button>
+              <button type="button" className="chip-btn" disabled={wallet.busy} onClick={() => void wallet.logout()}>Logout</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="mkt-switch">
+        <button type="button" className={mode === "buy" ? "on" : ""} onClick={() => setMode("buy")}>
+          ⚡ Buy <span className="muted small">{ONCHAIN_LISTINGS.length}</span>
+        </button>
+        <button type="button" className={mode === "sell" ? "on" : ""} onClick={() => setMode("sell")}>
+          💰 Sell <span className="muted small">{sellable.length + inv.length}</span>
+        </button>
+      </div>
+
+      {mode === "buy" ? (
+        <>
+          {!wallet.caps.particle && (
+            <p className="muted small warn">Add Particle keys in <code>.env</code> to enable live on-chain buys. Everything else plays offline.</p>
+          )}
+          <div className="mkt-filters">
+            <div className="mkt-chips">
+              {([["all", "All"], ["hero", "🗡️ Gladiators"], ["gear", "🛡️ Gear"], ["boost", "✨ Boosts"]] as const).map(([k, label]) => (
+                <button key={k} type="button" className={`f-chip ${kind === k ? "on" : ""}`} onClick={() => setKind(k)}>{label}</button>
+              ))}
+            </div>
+            <div className="mkt-chips">
+              <button type="button" className={`f-chip ${rarity === "all" ? "on" : ""}`} onClick={() => setRarity("all")}>Any</button>
+              {(["epic", "legendary"] as const).map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  className={`f-chip ${rarity === r ? "on" : ""}`}
+                  style={{ ["--rar" as string]: RARITY_META[r].color }}
+                  onClick={() => setRarity(r)}
+                >
+                  {RARITY_META[r].name}
+                </button>
+              ))}
+            </div>
+            <input className="mkt-search" type="search" placeholder="Search the Bazaar…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <select className="mkt-sort" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
+              <option value="rarity">Rarest first</option>
+              <option value="cheap">Cheapest first</option>
+              <option value="dear">Priciest first</option>
+            </select>
+          </div>
+
+          <div className="listing-grid">
+            {listings.length === 0 && <p className="muted small">Nothing in the stalls matches that.</p>}
+            {listings.map((l) => {
+              const rm = RARITY_META[l.rarity];
               return (
-                <div key={item.id} className="sell-item" style={{ ["--rar" as string]: RARITY_META[g.rarity].color }}>
-                  <img src={g.img} alt={g.name} />
-                  <div className="sell-info">
-                    <span className="sell-name">{g.name}</span>
-                    <span className="sell-tier" style={{ color: RARITY_META[g.rarity].color }}>+{g.might}⚔ {g.slot}</span>
+                <article key={l.id} className="listing" style={{ ["--rar" as string]: rm.color }}>
+                  <div className="listing-art">
+                    <img src={l.thumb ?? l.img} alt={l.label} loading="lazy" />
+                    <span className="listing-rar">{stars(rm.stars)}</span>
+                    <span className="listing-kind">{l.kind === "hero" ? "🗡️" : l.kind === "gear" ? "🛡️" : "✨"}</span>
                   </div>
-                  <button type="button" className="chip-btn" onClick={() => actions.sellGear(item.id)}>
-                    🪙 {formatNum(gearSellValue(item.defId))}
+                  <div className="listing-body">
+                    <div className="listing-name" title={l.label}>{l.label}</div>
+                    <div className="listing-sub" style={{ color: rm.color }}>{l.sub}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn buy"
+                    disabled={!canBuy}
+                    onClick={() => onBuy(l)}
+                    title={canBuy ? `Settles as USDT on Arbitrum` : "Connect a wallet with keys to buy on-chain"}
+                  >
+                    {wallet.busy ? "Routing…" : `＄${l.priceUsd.toFixed(2)} · Buy`}
                   </button>
-                </div>
+                </article>
               );
             })}
           </div>
+          {wallet.lastTx && (
+            <p className="tx-ok">Settled {wallet.lastTx.amount} USDT on Arbitrum · <a href={wallet.lastTx.url} target="_blank" rel="noreferrer">View on UniversalX</a></p>
+          )}
+        </>
+      ) : (
+        <div className="sell-cols">
+          <div className="sell-col">
+            <div className="sell-head">
+              <h4 className="ml">🗡️ Gladiators <span className="muted small">{sellable.length}</span></h4>
+              <span className="muted small">Selling frees a bunk — you must keep one.</span>
+            </div>
+            <div className="sell-grid">
+              {sellable.map((d) => (
+                <div key={d.id} className="sell-item" style={{ ["--rar" as string]: RARITY[d.tier].color }}>
+                  <img src={TIER_PORTRAIT[d.tier]} alt={d.name} onClick={() => onHero(d.id)} />
+                  <div className="sell-info">
+                    <span className="sell-name">{d.name}</span>
+                    <span className="sell-tier" style={{ color: RARITY[d.tier].color }}>{TIERS[d.tier].name} Lv{d.level}</span>
+                  </div>
+                  <button type="button" className="chip-btn sell-btn" disabled={state.dwellers.length <= 1} onClick={() => actions.sellHero(d.id)}>
+                    🪙 {formatNum(heroSellValue(d))}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="sell-col">
+            <div className="sell-head">
+              <h4 className="ml">🛡️ Spare gear <span className="muted small">{inv.length}</span></h4>
+              {inv.length > 0 && <span className="muted small">Pile is worth 🪙 {formatNum(gearPile)}</span>}
+            </div>
+            <div className="sell-grid">
+              {inv.length === 0 && <p className="muted small">No spare gear. Open lunchboxes or buy on-chain.</p>}
+              {inv.map((item) => {
+                const g = gearDefOf(item);
+                return (
+                  <div key={item.id} className="sell-item" style={{ ["--rar" as string]: RARITY_META[g.rarity].color }}>
+                    <img src={g.img} alt={g.name} />
+                    <div className="sell-info">
+                      <span className="sell-name">{g.name}</span>
+                      <span className="sell-tier" style={{ color: RARITY_META[g.rarity].color }}>+{g.might}⚔ {g.slot}</span>
+                    </div>
+                    <button type="button" className="chip-btn sell-btn" onClick={() => actions.sellGear(item.id)}>
+                      🪙 {formatNum(gearSellValue(item.defId))}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="tiers">
+      <div className="tiers mkt-tiers">
         <h3>Free Company tiers (on-chain boost)</h3>
         <ul>
-          {MERCENARY_TIERS.map((t) => (
-            <li key={t.minUsd} className={state.warChestUsd >= t.minUsd ? "earned" : ""}>
-              <span>≥ ${t.minUsd}</span>
-              <span>{t.label}</span>
-            </li>
-          ))}
+          {MERCENARY_TIERS.map((t) => {
+            const earned = state.warChestUsd >= t.minUsd;
+            return (
+              <li key={t.minUsd} className={earned ? "earned" : ""}>
+                <span>{earned ? "✓" : "≥"} ${t.minUsd}</span>
+                <span>{t.label}</span>
+              </li>
+            );
+          })}
         </ul>
       </div>
     </section>

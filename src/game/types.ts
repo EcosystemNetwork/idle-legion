@@ -205,6 +205,8 @@ export interface OnchainListing {
   label: string;
   sub: string;
   img: string;
+  /** 256px WebP for grid cards; falls back to `img` when absent. */
+  thumb?: string;
   priceUsd: number;
   rarity: Rarity;
   tier?: Tier;

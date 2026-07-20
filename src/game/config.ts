@@ -547,8 +547,6 @@ export const KEKIUS_MODEL = `${B}art/kekius-boss.glb`;
 // Canon: the people of the deep are Keks, sons of the laughing god, and the
 // realm is the Kek Empire — never "frogs". See LORE.md §4.
 export const KIT = {
-  mapIso: `${B}art/kit/map-iso.png`,
-  wheel: `${B}art/kit/map-wheel.png`,
   res: {
     gold: `${B}art/kit/res-gold.png`,
     provisions: `${B}art/kit/res-provisions.png`,
