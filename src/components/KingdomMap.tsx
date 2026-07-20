@@ -18,7 +18,7 @@ export default function KingdomMap({ onEnter }: { onEnter: (id: string) => void 
     <section className="kingdom">
       <div className="kingdom-head">
         <h2>Underground Kingdom</h2>
-        <span>— Gladiator Pepe Empire —</span>
+        <span>— Gladiator Kek Empire —</span>
       </div>
       <div className="kingdom-stage">
         <img className="kingdom-map" src={KIT.mapIso} alt="The underground kingdom" />

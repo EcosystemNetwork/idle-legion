@@ -1934,12 +1934,65 @@ export function advanceWorldBoss(state: GameState, elapsed: number, now: number)
     return { ...r, contributed: r.contributed + dmg };
   });
   const hp = Math.max(0, wb.hp - rivalDamage);
-  const advanced: GameState = { ...state, worldBoss: { ...wb, rivals, hp } };
-  if (hp <= 0 || now >= wb.endsAt) return resolveWorldBossCycle(advanced, now);
-  return advanced;
+  if (hp <= 0 || now >= wb.endsAt) {
+    // Silent reset — the local sim boss pays out ONLY on the player's own
+    // killing blow (see hitWorldBoss). A cycle that ends to rivals/timeout just
+    // escalates the boss with no auto-payout, so online play (where the server
+    // is authoritative over rewards) can't be double-credited by the local tick.
+    const nextTier = hp <= 0 ? wb.tier + 1 : wb.tier;
+    return { ...state, worldBoss: makeWorldBoss(nextTier, now, wb.week + 1) };
+  }
+  return { ...state, worldBoss: { ...wb, rivals, hp } };
 }
 
 export type WorldBossHit = { damage: number; killed: boolean; classEdge: number };
+
+/**
+ * A "pure strike" for LIVE (server-authoritative) mode: spends stamina + grants
+ * XP + enforces the cooldown and returns the damage rolled, but does NOT touch a
+ * boss or pay any reward locally. The real shared boss + the trustless payout
+ * live on the server; this only runs the player's own economy. `enemyClass` is
+ * the live boss's class (so the counter still matters).
+ */
+export function arenaStrike(
+  state: GameState,
+  enemyClass?: CombatClass,
+  now = Date.now(),
+): { state: GameState; damage: number } {
+  const wb = state.worldBoss;
+  if (now - wb.lastHitAt < WB_HIT_COOLDOWN_MS) throw new Error("Your legion is rallying — wait for the cooldown.");
+  const squad = arenaSquad(state);
+  if (squad.length === 0) throw new Error("No rested heroes to send at the World Boss.");
+  const power = squadPower(state, squad);
+  const cls = enemyClass ?? COMBAT_CLASSES[(wb.tier - 1) % COMBAT_CLASSES.length];
+  const edge = squadClassEdge(state, squad, cls);
+  const damage = Math.floor(power * (1.5 + Math.random()) * edge);
+  const squadIds = new Set(squad.map((d) => d.id));
+  let next: GameState = {
+    ...state,
+    worldBoss: { ...wb, lastHitAt: now },
+    dwellers: state.dwellers.map((d) =>
+      squadIds.has(d.id) ? { ...d, stamina: Math.max(0, d.stamina - WB_STAMINA_PER_HIT) } : d,
+    ),
+  };
+  next = applyXp(next, squad.map((d) => d.id), XP_FIGHT);
+  return { state: next, damage };
+}
+
+/** Credit a server-verified reward bundle (World Boss claim). Pure + additive. */
+export function grantArenaReward(
+  state: GameState,
+  r: { gold?: number; legion?: number; lunchboxes?: number },
+): GameState {
+  const gold = Math.floor(r.gold ?? 0);
+  return {
+    ...state,
+    gold: state.gold + gold,
+    totalGoldEarned: state.totalGoldEarned + gold,
+    legion: state.legion + (r.legion ?? 0),
+    lunchboxes: state.lunchboxes + Math.floor(r.lunchboxes ?? 0),
+  };
+}
 
 export function hitWorldBoss(
   state: GameState,

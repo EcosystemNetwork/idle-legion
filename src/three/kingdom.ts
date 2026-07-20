@@ -7,7 +7,7 @@
 //   • a cavern plaza floor (tiled floor texture)
 //   • six interactive buildings on a ring, each entering a game view on click
 //   • a rotating crystal monument + flickering torches + drifting dust motes
-//   • a small pool of animated frog dwellers wandering the plaza
+//   • a small pool of animated kek dwellers wandering the plaza
 //   • pointer picking (hover lift + glow, click → onEnter) and a damped,
 //     auto-orbiting camera
 //
@@ -18,7 +18,7 @@ import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js
 import type { Stage } from "./engine";
 import { disposeObject, loadGLB } from "./loaders";
 import { KIT } from "../game/config";
-import { FROG_MODEL } from "../game/interiors";
+import { KEK_MODEL } from "../game/interiors";
 
 // The six buildings, in ring order. id → the App tab entered on click.
 export interface BuildingDef {
@@ -294,12 +294,12 @@ export function buildKingdom(
   el.addEventListener("pointerdown", onDown);
   el.addEventListener("pointerup", onUp);
 
-  // --- Frog dwellers wandering the plaza. -----------------------------------
+  // --- Kek dwellers wandering the plaza. -----------------------------------
   const dwellers = new DwellerCrowd(
     scene,
     Math.min(MAX_DWELLERS, opts.dwellers ?? MAX_DWELLERS),
     shadowTex,
-    // Frogs walk between the buildings rather than orbiting the plaza.
+    // Keks walk between the buildings rather than orbiting the plaza.
     entries.map((e) => e.group.position.clone()),
   );
 
@@ -541,23 +541,38 @@ function makeDust(track: <T extends { dispose: () => void }>(x: T) => T): THREE.
 }
 
 // ---------------------------------------------------------------------------
-// Dweller crowd — animated frogs wandering the plaza on lazy circular paths.
+// Dweller crowd — animated keks wandering the plaza on lazy circular paths.
 // ---------------------------------------------------------------------------
+
+/** One-shot clips a loitering kek drops into so the plaza isn't all walking. */
+const FLOURISHES = ["Dance", "Taunt", "Spin", "Attack", "ComboAttack", "Arise"];
 
 interface Dweller {
   root: THREE.Object3D;
   mixer: THREE.AnimationMixer;
   walk: THREE.AnimationAction | null;
+  run: THREE.AnimationAction | null;
   idle: THREE.AnimationAction | null;
-  /** 0 = fully idle, 1 = fully walking (crossfade weight). */
+  flourishes: THREE.AnimationAction[];
+  /** 0 = fully idle, 1 = fully travelling (crossfade weight). */
   moveW: number;
+  /** 0 = walking, 1 = running (split of `moveW` between the two gaits). */
+  runW: number;
+  /** True while a one-shot flourish owns the pose. */
+  busy: boolean;
+  /** How much the locomotion blend is in control (1 = fully, 0 = flourishing). */
+  locoW: number;
+  /** Seconds of loitering left before the next flourish fires. */
+  untilFlourish: number;
   target: THREE.Vector3;
   speed: number;
+  /** A long haul across the plaza is run, not walked. */
+  hurried: boolean;
   /** Seconds left loitering before picking a new destination. */
   waiting: number;
 }
 
-/** Shortest-path angle lerp so frogs turn the near way round. */
+/** Shortest-path angle lerp so keks turn the near way round. */
 function turnToward(from: number, to: number, k: number): number {
   let d = ((to - from + Math.PI) % (Math.PI * 2)) - Math.PI;
   if (d < -Math.PI) d += Math.PI * 2;
@@ -600,19 +615,23 @@ class DwellerCrowd {
 
   private async load(count: number) {
     try {
-      const { scene: model, animations } = await loadGLB(FROG_MODEL);
+      const { scene: model, animations } = await loadGLB(KEK_MODEL);
       if (this.disposed) {
         disposeObject(model);
         return;
       }
-      // Frogs run BOTH clips and crossfade between them, so they walk while
-      // travelling and settle into idle while loitering at a building.
-      const idleClip =
-        animations.find((a) => /idle/i.test(a.name)) ?? animations[0] ?? null;
-      const walkClip =
-        animations.find((a) => /^walk$/i.test(a.name)) ??
-        animations.find((a) => /walk/i.test(a.name)) ??
+      const find = (name: string) =>
+        animations.find((a) => a.name.toLowerCase() === name.toLowerCase()) ??
+        animations.find((a) => a.name.toLowerCase().includes(name.toLowerCase())) ??
         null;
+      // Keks run idle/walk/run together and crossfade between them, so they
+      // pick a gait to travel and settle into idle while loitering.
+      const idleClip = find("Idle") ?? animations[0] ?? null;
+      const walkClip = find("Walk");
+      const runClip = find("Run");
+      const flourishClips = FLOURISHES.map(find).filter(
+        (c): c is THREE.AnimationClip => !!c,
+      );
       for (let i = 0; i < count; i++) {
         const root = cloneSkinned(model);
         root.scale.setScalar(1.05);
@@ -623,24 +642,49 @@ class DwellerCrowd {
         const mixer = new THREE.AnimationMixer(root);
         const idle = idleClip ? mixer.clipAction(idleClip) : null;
         const walk = walkClip ? mixer.clipAction(walkClip) : null;
+        const run = runClip ? mixer.clipAction(runClip) : null;
         idle?.play();
         walk?.play();
+        run?.play();
         idle?.setEffectiveWeight(1);
         walk?.setEffectiveWeight(0);
-        // Ride-along contact shadow so the frog reads as standing on the floor.
-        root.add(makeContactShadow(this.shadowTex, 1.3, 0.7));
-        root.position.copy(this.pickPoint());
-        this.scene.add(root);
-        this.dwellers.push({
+        run?.setEffectiveWeight(0);
+        // Flourishes are one-shots that take over the pose, then hand it back.
+        const flourishes = flourishClips.map((c) => {
+          const a = mixer.clipAction(c);
+          a.setLoop(THREE.LoopOnce, 1);
+          a.clampWhenFinished = true;
+          return a;
+        });
+        const self: Dweller = {
           root,
           mixer,
           walk,
+          run,
           idle,
+          flourishes,
           moveW: 0,
+          runW: 0,
+          busy: false,
+          locoW: 1,
+          untilFlourish: 1 + Math.random() * 5,
           target: this.pickPoint(),
           speed: 1.15 + (i % 4) * 0.18,
+          hurried: false,
           waiting: Math.random() * 2,
+        };
+        // The flourish fades itself out; `locoW` fades locomotion back in. The
+        // two must not both drive the same weights or they'd fight each frame.
+        mixer.addEventListener("finished", (e: { action: THREE.AnimationAction }) => {
+          self.busy = false;
+          self.untilFlourish = 3 + Math.random() * 7;
+          e.action.fadeOut(0.3);
         });
+        // Ride-along contact shadow so the kek reads as standing on the floor.
+        root.add(makeContactShadow(this.shadowTex, 1.3, 0.7));
+        root.position.copy(this.pickPoint());
+        this.scene.add(root);
+        this.dwellers.push(self);
       }
       this.ready = true;
       this.applyActive();
@@ -670,9 +714,23 @@ class DwellerCrowd {
 
       let moving = false;
       if (d.waiting > 0) {
-        // Loitering in front of a building.
+        // Loitering in front of a building — every so often, show off.
         d.waiting -= dt;
-        if (d.waiting <= 0) d.target = this.pickPoint();
+        if (!d.busy && d.flourishes.length > 0) {
+          d.untilFlourish -= dt;
+          if (d.untilFlourish <= 0) {
+            const f = d.flourishes[Math.floor(Math.random() * d.flourishes.length)];
+            d.busy = true;
+            f.reset().setEffectiveWeight(0).fadeIn(0.25).play();
+          }
+        }
+        if (d.waiting <= 0 && !d.busy) {
+          d.target = this.pickPoint();
+          // Long hauls across the plaza get run, short hops get walked.
+          d.hurried = d.root.position.distanceTo(d.target) > 5;
+        } else if (d.waiting <= 0) {
+          d.waiting = 0.2; // mid-flourish — hold position until it lands
+        }
       } else {
         const p = d.root.position;
         const dx = d.target.x - p.x;
@@ -682,7 +740,8 @@ class DwellerCrowd {
           d.waiting = 1.5 + Math.random() * 4; // arrived — hang about a while
         } else {
           moving = true;
-          const step = Math.min(dist, d.speed * dt);
+          const gait = d.hurried ? 1.85 : 1;
+          const step = Math.min(dist, d.speed * gait * dt);
           p.x += (dx / dist) * step;
           p.z += (dz / dist) * step;
           d.root.rotation.y = turnToward(
@@ -693,10 +752,14 @@ class DwellerCrowd {
         }
       }
 
-      // Crossfade Walk ⇄ Idle so nobody moonwalks.
+      // Crossfade Idle ⇄ Walk ⇄ Run so nobody moonwalks. A flourish owns the
+      // pose outright while it plays, so the whole locomotion blend backs off.
       d.moveW += ((moving ? 1 : 0) - d.moveW) * Math.min(1, dt * 8);
-      d.walk?.setEffectiveWeight(d.moveW);
-      d.idle?.setEffectiveWeight(1 - d.moveW);
+      d.runW += ((d.hurried ? 1 : 0) - d.runW) * Math.min(1, dt * 5);
+      d.locoW += ((d.busy ? 0 : 1) - d.locoW) * Math.min(1, dt * 6);
+      d.walk?.setEffectiveWeight(d.locoW * d.moveW * (1 - d.runW));
+      d.run?.setEffectiveWeight(d.locoW * d.moveW * d.runW);
+      d.idle?.setEffectiveWeight(d.locoW * (1 - d.moveW));
     }
   }
 

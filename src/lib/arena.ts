@@ -46,10 +46,17 @@ export interface WbResolved {
   field: number;
   tier: number;
 }
+export interface WbReward {
+  gold: number;
+  legion: number;
+  lunchboxes: number;
+  cycles: number;
+}
 export interface WbState {
   boss: { tier: number; hp: number; maxHp: number; endsAt: number; week: number };
   leaderboard: WbLeaderRow[];
   you: { contributed: number; rank: number | null };
+  pendingReward: WbReward;
   resolved: WbResolved | null;
 }
 
@@ -59,6 +66,11 @@ export function fetchWorldBoss(name: string): Promise<WbState | null> {
 
 export function strikeWorldBoss(name: string, damage: number): Promise<WbState | null> {
   return callFn<WbState>("world-boss", { op: "hit", name, damage });
+}
+
+/** Redeem this player's server-recorded rewards; the server marks them claimed. */
+export function claimWorldBossRewards(): Promise<{ reward: WbReward } | null> {
+  return callFn<{ reward: WbReward }>("world-boss", { op: "claim" });
 }
 
 // ---- PvP ladder ----

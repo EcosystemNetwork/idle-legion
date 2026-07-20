@@ -1726,9 +1726,9 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
 .adm-ret-tile b { display: block; font-family: var(--font-head); font-size: 18px; color: var(--gold); }
 .adm-ret-tile small { display: block; font-size: 9px; text-transform: uppercase; color: #8a819c; margin-top: 2px; }
 
-/* room worker 3D frog + happiness face */
+/* room worker 3D kek + happiness face */
 .ch-worker { position: absolute; right: 10px; bottom: 2px; z-index: 2; pointer-events: none; }
-/* Worker frogs render on the shared portal canvas, so a CSS drop-shadow can't
+/* Worker keks render on the shared portal canvas, so a CSS drop-shadow can't
    reach them — the in-scene lighting grounds them instead. */
 .ch-worker > div { background: transparent; }
 .ch-mood { position: absolute; top: 8px; right: 12px; z-index: 4; font-size: 22px; filter: drop-shadow(0 2px 3px #000); animation: moodbob 2.2s ease-in-out infinite; }

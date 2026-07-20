@@ -14,5 +14,5 @@ export const INTERIOR: Record<string, string> = {
 
 export const QUESTSCENES = `${B}art/kit/questscenes.jpg`;
 
-/** The animated 3D frog dweller (all clips consolidated). */
-export const FROG_MODEL = `${B}art/kekius-boss.glb`;
+/** The animated 3D kek dweller (all clips consolidated). */
+export const KEK_MODEL = `${B}art/kekius-boss.glb`;

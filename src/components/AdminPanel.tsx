@@ -123,11 +123,26 @@ const rel = (iso: string | null | undefined) => {
   return `${Math.floor(s / 86400)}d ago`;
 };
 
-// country_code (ISO-2) -> flag emoji
-const flag = (code: string | null | undefined) => {
-  if (!code || code.length !== 2) return "🏳️";
-  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
-};
+// Flag rendered as an image, not an emoji — regional-indicator flag emoji don't
+// render on many Linux/Chrome setups (they fall back to letter-pairs). flagcdn
+// gives a real flag image everywhere; unknown/invalid codes show a neutral globe.
+function Flag({ code }: { code: string | null | undefined }) {
+  if (!code || code.length !== 2 || !/^[a-zA-Z]{2}$/.test(code)) {
+    return <span className="adm-flag adm-flag-x" aria-hidden>🌐</span>;
+  }
+  const cc = code.toLowerCase();
+  return (
+    <img
+      className="adm-flag"
+      src={`https://flagcdn.com/w40/${cc}.png`}
+      srcSet={`https://flagcdn.com/w80/${cc}.png 2x`}
+      alt={code.toUpperCase()}
+      title={code.toUpperCase()}
+      loading="lazy"
+      onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
+    />
+  );
+}
 
 // Event types render in a fixed categorical order (validated blue/green/magenta/
 // yellow), always paired with the type word so identity is never color-alone.
@@ -390,7 +405,7 @@ function TelemetrySection() {
                         <div className="adm-pl-email">{s.email ?? <span className="adm-dim">anon player</span>}</div>
                         <div className="adm-dim adm-pl-sub">{s.wallet_address ? shortAddr(s.wallet_address) : s.session_id.slice(0, 12)}</div>
                       </td>
-                      <td>{flag(s.country_code)} {[s.city, s.country].filter(Boolean).join(", ") || <span className="adm-dim">—</span>}</td>
+                      <td><Flag code={s.country_code} /> {[s.city, s.country].filter(Boolean).join(", ") || <span className="adm-dim">—</span>}</td>
                       <td>{s.total_clicks}</td>
                       <td title={`${s.visits} visit(s)`}>{fmtDur(s.active_seconds)}</td>
                       <td>{rel(s.last_seen)}</td>
@@ -423,7 +438,7 @@ function TelemetrySection() {
                   <div key={i} className="adm-stream-row">
                     <span className="adm-etype" style={{ color: etColor(r.type) }}>{r.type}</span>
                     <span className="adm-ename">{r.name}</span>
-                    <span className="adm-dim adm-small">{flag(r.code)} {r.email ?? r.city ?? r.session_id.slice(0, 8)}</span>
+                    <span className="adm-dim adm-small"><Flag code={r.code} /> {r.email ?? r.city ?? r.session_id.slice(0, 8)}</span>
                     <span className="adm-dim adm-small">{rel(r.at)}</span>
                   </div>
                 ))}
@@ -437,7 +452,7 @@ function TelemetrySection() {
               <h5 className="adm-h5">Players by country</h5>
               <BarList
                 max={maxCountry}
-                rows={data.byCountry.map((c) => ({ key: c.country, label: <span>{flag(c.code)} {c.country}</span>, count: c.count }))}
+                rows={data.byCountry.map((c) => ({ key: c.country, label: <span><Flag code={c.code} /> {c.country}</span>, count: c.count }))}
               />
             </>
           )}
@@ -503,7 +518,7 @@ function TelemetrySection() {
         <div className="adm-drill-backdrop" onClick={() => { setDrillId(null); setDrill(null); }}>
           <div className="adm-drill" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>{drill?.session?.email ?? "Player"} <span className="adm-dim adm-small">{flag(drill?.session?.country_code)}</span></h3>
+              <h3>{drill?.session?.email ?? "Player"} <span className="adm-dim adm-small"><Flag code={drill?.session?.country_code} /></span></h3>
               <button className="chip-btn" onClick={() => { setDrillId(null); setDrill(null); }}>✕</button>
             </div>
             {!drill ? (

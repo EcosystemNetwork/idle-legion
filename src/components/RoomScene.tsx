@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import Actor from "./Actor";
-import { FROG_MODEL, INTERIOR } from "../game/interiors";
+import { KEK_MODEL, INTERIOR } from "../game/interiors";
 
 // A Fallout-Shelter-style room: the painterly interior backdrop with dwellers
 // standing on the floor inside it. Drop dweller elements in as children — they
@@ -27,12 +27,12 @@ export function RoomScene({
   );
 }
 
-// A single animated 3D frog dweller standing in a room. `anim` picks a clip
+// A single animated 3D kek dweller standing in a room. `anim` picks a clip
 // from the consolidated GLB. Real clips: Idle, Walk, Run, Attack, ComboAttack,
 // Spin, Taunt, Dance, Arise, Dead.
 // Rendered through the shared-context portal renderer, so a stronghold full of
 // these costs ONE WebGL context in total rather than one apiece.
-export function RoomFrog({
+export function RoomKek({
   anim,
   breaks,
   size = 150,
@@ -46,14 +46,14 @@ export function RoomFrog({
 }) {
   return (
     <Actor
-      src={FROG_MODEL}
+      src={KEK_MODEL}
       anim={anim}
       breaks={breaks}
       fov={26}
       zoom={2}
       aim={0.5}
       onClick={onClick}
-      title="Pepe legionary"
+      title="Kek legionary"
       style={{ width: size, height: size * 1.15 }}
     />
   );

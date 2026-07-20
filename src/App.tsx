@@ -11,7 +11,7 @@ const AdminPanel = lazy(() => import("./components/AdminPanel"));
 import KingdomMap from "./components/KingdomMap";
 import Actor from "./components/Actor";
 import { INTERIOR } from "./game/interiors";
-import { RoomFrog } from "./components/RoomScene";
+import { RoomKek } from "./components/RoomScene";
 import {
   APTITUDE_ICON,
   APTITUDE_LABEL,
@@ -168,9 +168,9 @@ type Wallet = ReturnType<typeof useWallet>;
 // Real clip names in kekius-boss.glb: Idle, Spin, Taunt, Dance, Arise, Attack,
 // Walk, Dead, Run, ComboAttack. Pick a work-flavored loop per room.
 // What the room's 3D dweller does: a looping work clip plus one-shot breaks it
-// drops into every few seconds. Between them these cover every clip in the frog
+// drops into every few seconds. Between them these cover every clip in the kek
 // GLB — Idle, Walk, Run, Attack, ComboAttack, Spin, Taunt, Dance, Arise, Dead.
-const FROG_WORK_ANIM: Record<string, { anim: string; breaks: string[] }> = {
+const KEK_WORK_ANIM: Record<string, { anim: string; breaks: string[] }> = {
   mine: { anim: "Attack", breaks: ["Spin", "Idle"] },
   forge: { anim: "ComboAttack", breaks: ["Attack", "Taunt"] },
   granary: { anim: "Walk", breaks: ["Run", "Idle"] },
@@ -178,10 +178,10 @@ const FROG_WORK_ANIM: Record<string, { anim: string; breaks: string[] }> = {
   warroom: { anim: "Taunt", breaks: ["ComboAttack", "Run"] },
   portal: { anim: "Spin", breaks: ["Arise", "Dance"] },
 };
-const FROG_ANIM_FALLBACK = { anim: "Idle", breaks: ["Taunt", "Dance", "Spin"] };
+const KEK_ANIM_FALLBACK = { anim: "Idle", breaks: ["Taunt", "Dance", "Spin"] };
 // A room with an incapacitated worker plays it straight: down, then struggling
 // back up. `Dead` and `Arise` only ever show up here.
-const FROG_ANIM_DOWNED = { anim: "Dead", breaks: ["Arise"] };
+const KEK_ANIM_DOWNED = { anim: "Dead", breaks: ["Arise"] };
 
 const RESOURCE_IMG: Record<string, string> = {
   gold: IMG.gold,
@@ -291,7 +291,7 @@ function ModelBoss({ src }: { src: string }) {
       fov={30}
       zoom={1.85}
       aim={0.55}
-      // Fixed pixel box, like the room frogs. Percentage sizing inside the
+      // Fixed pixel box, like the room keks. Percentage sizing inside the
       // absolutely-positioned .ch-model measured as an unstable rect, and the
       // Master never drew.
       style={{ width: 340, height: 360 }}
@@ -1477,9 +1477,9 @@ function Chamber({
   const fill = storeCap > 0 ? Math.min(1, storedRaw / storeCap) : 0;
   const workers = room.workers.map((id) => dwellerById(state, id)).filter(Boolean) as Dweller[];
   const incident = state.incident?.roomId === room.id ? state.incident : null;
-  const frogAnim = workers.some((d) => d.downed)
-    ? FROG_ANIM_DOWNED
-    : (FROG_WORK_ANIM[room.type] ?? FROG_ANIM_FALLBACK);
+  const kekAnim = workers.some((d) => d.downed)
+    ? KEK_ANIM_DOWNED
+    : (KEK_WORK_ANIM[room.type] ?? KEK_ANIM_FALLBACK);
   const upCost = upgradeCost(room);
   const resImg = def.produces ? RESOURCE_IMG[def.produces] : null;
   const resting =
@@ -1542,7 +1542,7 @@ function Chamber({
         <div className="ch-stage">
           {workers.length > 0 && (
             <div className="ch-worker">
-              <RoomFrog {...frogAnim} size={130} />
+              <RoomKek {...kekAnim} size={130} />
             </div>
           )}
           <span className="ch-mood" aria-hidden>

@@ -1,6 +1,6 @@
 # Fallout Shelter — Build Spec (clone reference)
 
-> The canonical reference we build the Kekius vault against. Frog-empire re-skin on top,
+> The canonical reference we build the Kekius vault against. Kek-empire re-skin on top,
 > but the **systems + numbers + game-feel** come from here. Keep Market + Codex; rebuild the rest to this.
 
 ## Our game vs. this spec — gap map (what we're missing)

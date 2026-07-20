@@ -24,8 +24,10 @@ import {
   claimLand,
   clearDuelResult,
   clearWorldBossReward,
+  arenaStrike,
   duel,
   duelAgainst,
+  grantArenaReward,
   grantBundle,
   grantGearItem,
   grantGladiator,
@@ -60,7 +62,7 @@ import {
   type WorldBossHit,
 } from "../game/engine";
 import { STORAGE_KEY } from "../game/config";
-import type { GameState, GearSlot, LandKind, RoomType, Tier } from "../game/types";
+import type { CombatClass, GameState, GearSlot, LandKind, RoomType, Tier } from "../game/types";
 import {
   loadCloud,
   localSavedAt,
@@ -213,6 +215,21 @@ export function useGame() {
     }
   }, [state]);
 
+  // LIVE-mode strike: spend stamina/XP + roll damage, but pay NOTHING locally
+  // (the server owns the shared boss + the trustless payout). Returns the damage.
+  const strikeArena = useCallback((enemyClass?: CombatClass): number | null => {
+    setError(null);
+    try {
+      const { state: next, damage } = arenaStrike(tick(state, Date.now()), enemyClass);
+      saveState(next);
+      setState(next);
+      return damage;
+    } catch (e) {
+      setError((e as Error).message);
+      return null;
+    }
+  }, [state]);
+
   const actions = useMemo(
     () => ({
       recruit: () => wrap(recruitDweller),
@@ -268,6 +285,8 @@ export function useGame() {
       duel: (oppId: number) => wrap((s) => duel(s, oppId)),
       duelReal: (opp: DuelOpponent) => wrap((s) => duelAgainst(s, opp)),
       clearDuelResult: () => wrap(clearDuelResult),
+      grantArenaReward: (r: { gold?: number; legion?: number; lunchboxes?: number }) =>
+        wrap((s) => grantArenaReward(s, r)),
       clearError: () => setError(null),
       // Dev/admin escape hatch — shallow-merge an arbitrary state patch.
       devPatch: (patch: Partial<GameState>) => wrap((s) => ({ ...s, ...patch })),
@@ -292,5 +311,6 @@ export function useGame() {
     openLunchbox: openBox,
     fightBoss: fight,
     hitWorldBoss: hitBoss,
+    strikeArena,
   };
 }

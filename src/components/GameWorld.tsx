@@ -13,7 +13,7 @@ import { buildKingdom, type BuildingDef, type KingdomHandle } from "../three/kin
 
 interface GameWorldProps {
   onEnter: (id: string) => void;
-  /** Wandering-frog headcount (usually the player's dweller count). */
+  /** Wandering-kek headcount (usually the player's dweller count). */
   dwellers?: number;
   /** Rendered instead of the 3D scene when WebGL is unavailable or setup fails. */
   fallback?: ReactNode;
@@ -85,7 +85,7 @@ export default function GameWorld({ onEnter, dwellers, fallback }: GameWorldProp
       {!ready && <div className="gw-veil" aria-label="Entering the kingdom…" />}
       <div className="gw-head">
         <h2>Underground Kingdom</h2>
-        <span>— Gladiator Pepe Empire —</span>
+        <span>— Gladiator Kek Empire —</span>
       </div>
       <div className={`gw-tip${hover ? " show" : ""}`}>
         {hover ? (
