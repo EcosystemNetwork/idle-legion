@@ -1,10 +1,13 @@
-import {
-  CHAIN_ID,
-  UniversalAccount,
-  type IAssetsResponse,
-  type ITransaction,
+// The Particle UA SDK + ethers are the two heaviest dependencies in the app and
+// most players never open the on-chain Bazaar, so both are loaded on demand
+// rather than at import time. Types are `import type` (erased at compile time,
+// zero runtime cost); every value import happens inside an async call below.
+import type {
+  IAssetsResponse,
+  ITransaction,
+  UniversalAccount as UniversalAccountType,
 } from "@particle-network/universal-account-sdk";
-import { BrowserProvider, getBytes, type Signer } from "ethers";
+import type { BrowserProvider, Signer } from "ethers";
 import {
   ARBITRUM_USDT,
   DEFAULT_FUND_AMOUNT,
@@ -13,12 +16,14 @@ import {
   warChestReceiver,
 } from "./config";
 
-export function createUniversalAccount(ownerAddress: string): UniversalAccount {
+export async function createUniversalAccount(ownerAddress: string): Promise<UniversalAccountType> {
   if (!hasParticleKeys()) {
     throw new Error(
       "Missing Particle keys. Set VITE_PARTICLE_PROJECT_ID, VITE_PARTICLE_CLIENT_KEY, VITE_PARTICLE_APP_ID in .env",
     );
   }
+
+  const { UniversalAccount } = await import("@particle-network/universal-account-sdk");
 
   // EIP-7702 mode: EOA is upgraded in place — same address, chain-abstracted balance
   return new UniversalAccount({
@@ -40,14 +45,14 @@ export function createUniversalAccount(ownerAddress: string): UniversalAccount {
 export async function fetchPrimaryAssets(
   ownerAddress: string,
 ): Promise<IAssetsResponse> {
-  const ua = createUniversalAccount(ownerAddress);
+  const ua = await createUniversalAccount(ownerAddress);
   return ua.getPrimaryAssets();
 }
 
 export async function getSmartAccountAddress(
   ownerAddress: string,
 ): Promise<string | undefined> {
-  const ua = createUniversalAccount(ownerAddress);
+  const ua = await createUniversalAccount(ownerAddress);
   const opts = await ua.getSmartAccountOptions();
   // In 7702 mode the EOA is the account; still surface smart account fields if present
   return opts.smartAccountAddress ?? ownerAddress;
@@ -70,7 +75,13 @@ export async function fundWarChestOnArbitrum(params: {
     warChestReceiver ??
     params.ownerAddress;
 
-  const ua = createUniversalAccount(params.ownerAddress);
+  // Both heavy SDKs load here, in parallel, only once a real transfer is made.
+  const [{ CHAIN_ID }, { getBytes }] = await Promise.all([
+    import("@particle-network/universal-account-sdk"),
+    import("ethers"),
+  ]);
+
+  const ua = await createUniversalAccount(params.ownerAddress);
 
   // Transfer USDT on Arbitrum — UA routes liquidity from whatever chain holds funds
   const transaction: ITransaction = await ua.createTransferTransaction({
@@ -131,7 +142,8 @@ export async function signerFromEip1193(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   eip1193: any,
 ): Promise<{ address: string; signer: Signer; provider: BrowserProvider }> {
-  const provider = new BrowserProvider(eip1193);
+  const { BrowserProvider: Provider } = await import("ethers");
+  const provider = new Provider(eip1193);
   await provider.send("eth_requestAccounts", []);
   const signer = await provider.getSigner();
   const address = await signer.getAddress();

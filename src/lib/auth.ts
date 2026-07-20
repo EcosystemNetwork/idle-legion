@@ -1,16 +1,20 @@
-import { Magic } from "magic-sdk";
+import type { Magic } from "magic-sdk";
 import type { Signer } from "ethers";
 import { hasMagicKey, magicKey } from "./config";
 import { signerFromEip1193 } from "./ua";
 
 let magicSingleton: Magic | null = null;
 
-export function getMagic(): Magic | null {
+/**
+ * Loads magic-sdk on first use instead of at import time. Most players never
+ * connect a wallet, so this keeps the whole embedded-wallet stack out of the
+ * initial bundle — it's fetched only when someone actually logs in.
+ */
+export async function getMagic(): Promise<Magic | null> {
   if (!hasMagicKey()) return null;
   if (!magicSingleton) {
-    magicSingleton = new Magic(magicKey!, {
-      network: "mainnet",
-    });
+    const { Magic: MagicCtor } = await import("magic-sdk");
+    magicSingleton = new MagicCtor(magicKey!, { network: "mainnet" });
   }
   return magicSingleton;
 }
@@ -23,7 +27,7 @@ export type AuthSession = {
 };
 
 export async function loginWithMagicEmail(email: string): Promise<AuthSession> {
-  const magic = getMagic();
+  const magic = await getMagic();
   if (!magic) {
     throw new Error("Magic key not configured (VITE_MAGIC_PUBLISHABLE_KEY)");
   }
@@ -46,7 +50,7 @@ export async function loginWithMagicEmail(email: string): Promise<AuthSession> {
 }
 
 export async function restoreMagicSession(): Promise<AuthSession | null> {
-  const magic = getMagic();
+  const magic = await getMagic();
   if (!magic) return null;
   try {
     const loggedIn = await magic.user.isLoggedIn();
@@ -65,7 +69,7 @@ export async function restoreMagicSession(): Promise<AuthSession | null> {
 }
 
 export async function logoutMagic() {
-  const magic = getMagic();
+  const magic = await getMagic();
   if (magic) {
     try {
       await magic.user.logout();
