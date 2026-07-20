@@ -167,7 +167,7 @@ export function buildKingdom(
   scene.add(dust);
 
   // --- Camera + damped auto-orbit controls. ---------------------------------
-  camera.position.set(0, 9.5, 15.5);
+  camera.position.set(0, 11, 18);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, 1.6, 0);
   controls.enableDamping = true;
@@ -309,57 +309,52 @@ function makeBuilding(
 ): { group: THREE.Group; windows: THREE.MeshStandardMaterial } {
   const g = new THREE.Group();
 
-  const wallMat = track(new THREE.MeshStandardMaterial({ color: def.base, roughness: 0.85, metalness: 0.1, flatShading: true }));
-  const bodyGeo = track(new THREE.BoxGeometry(2.4, 2.2, 2.4));
-  const body = new THREE.Mesh(bodyGeo, wallMat);
-  body.position.y = 1.1;
-  g.add(body);
+  // The building IS the painterly art: a grounded, camera-facing billboard.
+  // (Primitive box+cone houses read as programmer art next to this kit.)
+  const H = 3.4;
 
-  // Themed roof pyramid.
-  const roofMat = track(new THREE.MeshStandardMaterial({ color: def.accent, emissive: def.accent, emissiveIntensity: 0.25, roughness: 0.6, flatShading: true }));
-  const roofGeo = track(new THREE.ConeGeometry(1.95, 1.4, 4));
-  const roof = new THREE.Mesh(roofGeo, roofMat);
-  roof.position.y = 2.9;
-  roof.rotation.y = Math.PI / 4;
-  g.add(roof);
+  // Glowing ground halo — reads as lit windows spilling onto the plaza, and is
+  // the surface the hover pulse drives.
+  const haloMat = track(
+    new THREE.MeshStandardMaterial({
+      color: def.accent,
+      emissive: def.accent,
+      emissiveIntensity: 0.55,
+      transparent: true,
+      opacity: 0.45,
+      roughness: 1,
+      depthWrite: false,
+    }),
+  );
+  const haloGeo = track(new THREE.CircleGeometry(1.45, 28));
+  const halo = new THREE.Mesh(haloGeo, haloMat);
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.06;
+  g.add(halo);
 
-  // Glowing windows band (front + sides), shared material so hover can pulse it.
-  const winMat = track(new THREE.MeshStandardMaterial({ color: def.accent, emissive: def.accent, emissiveIntensity: 0.8 }));
-  const winGeo = track(new THREE.BoxGeometry(1.6, 0.5, 0.06));
-  for (const [rx, rz, ry] of [
-    [0, 1.21, 0],
-    [1.21, 0, Math.PI / 2],
-    [-1.21, 0, Math.PI / 2],
-  ] as const) {
-    const w = new THREE.Mesh(winGeo, winMat);
-    w.position.set(rx, 1.25, rz);
-    w.rotation.y = ry;
-    g.add(w);
-  }
-
-  // Doorway.
-  const doorMat = track(new THREE.MeshStandardMaterial({ color: 0x0a0710, roughness: 1 }));
-  const doorGeo = track(new THREE.BoxGeometry(0.9, 1.2, 0.08));
-  const door = new THREE.Mesh(doorGeo, doorMat);
-  door.position.set(0, 0.6, 1.21);
-  g.add(door);
-
-  // Floating icon sign (billboard) above the roof.
-  const iconTex = texLoader.load(def.icon);
+  const iconTex = texLoader.load(def.icon, (t) => {
+    // Preserve the art's aspect once the image is known, keeping its base on
+    // the ground rather than stretching it into a square.
+    const img = t.image as { width: number; height: number } | undefined;
+    if (!img?.width || !img?.height) return;
+    const aspect = img.width / img.height;
+    sprite.scale.set(H * aspect, H, 1);
+    sprite.position.y = H / 2;
+  });
   iconTex.colorSpace = THREE.SRGBColorSpace;
   track(iconTex);
   const iconMat = track(new THREE.SpriteMaterial({ map: iconTex, transparent: true, depthWrite: false }));
-  const iconSprite = new THREE.Sprite(iconMat);
-  iconSprite.position.set(0, 4.5, 0);
-  iconSprite.scale.set(1.7, 1.7, 1);
-  g.add(iconSprite);
+  const sprite = new THREE.Sprite(iconMat);
+  sprite.scale.set(H, H, 1);
+  sprite.position.set(0, H / 2, 0);
+  g.add(sprite);
 
-  // Name plate (canvas texture billboard) under the icon.
+  // Name plate above the building.
   const label = makeLabelSprite(def.name, track);
-  label.position.set(0, 3.55, 0);
+  label.position.set(0, H + 0.55, 0);
   g.add(label);
 
-  return { group: g, windows: winMat };
+  return { group: g, windows: haloMat };
 }
 
 function makeTorch(
@@ -458,7 +453,7 @@ class DwellerCrowd {
       const idle = animations.find((a) => /idle/i.test(a.name)) ?? animations[0] ?? null;
       for (let i = 0; i < count; i++) {
         const root = cloneSkinned(model);
-        root.scale.setScalar(0.55);
+        root.scale.setScalar(1.05);
         root.traverse((o) => {
           const m = o as THREE.Mesh;
           if (m.isMesh) m.frustumCulled = false;
