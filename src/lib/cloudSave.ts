@@ -21,7 +21,12 @@ import type { GameState } from "../game/types";
 
 const BASE =
   (import.meta.env.VITE_INSFORGE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
-const SAVED_AT_KEY = "idle-legion-cloud-savedat";
+// Scoped PER player key. A single global marker meant that after signing in we
+// compared the account's cloud stamp against a stamp written for the anonymous
+// device save — so a 10-minute anonymous session could look "newer" than a
+// 50-hour account and overwrite it.
+const SAVED_AT_PREFIX = "idle-legion-cloud-savedat";
+const savedAtKey = (key: string) => `${SAVED_AT_PREFIX}:${key}`;
 
 export interface Identity {
   email?: string | null;
@@ -44,10 +49,13 @@ export function playerKey(): string {
   return `device:${operatorId()}`;
 }
 
-/** savedAt (ms) of this device's last successful push, or 0 if it never pushed. */
+/**
+ * savedAt (ms) this device last synced FOR THE CURRENT PLAYER KEY, or 0 if it
+ * has never synced that key (which is what makes a fresh device adopt the cloud).
+ */
 export function localSavedAt(): number {
   try {
-    return Number(localStorage.getItem(SAVED_AT_KEY)) || 0;
+    return Number(localStorage.getItem(savedAtKey(playerKey()))) || 0;
   } catch {
     return 0;
   }
@@ -56,7 +64,7 @@ export function localSavedAt(): number {
 /** Record the savedAt we're now in sync with (after a push or an adopt). */
 export function markCloudSynced(savedAt: number) {
   try {
-    localStorage.setItem(SAVED_AT_KEY, String(savedAt));
+    localStorage.setItem(savedAtKey(playerKey()), String(savedAt));
   } catch {
     /* ignore */
   }

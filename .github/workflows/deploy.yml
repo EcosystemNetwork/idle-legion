@@ -28,6 +28,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run lint
+      - run: npm test --if-present
       - name: Build
         run: npm run build
         env:
@@ -37,6 +39,12 @@ jobs:
           VITE_PARTICLE_APP_ID: ${{ secrets.VITE_PARTICLE_APP_ID }}
           VITE_MAGIC_PUBLISHABLE_KEY: ${{ secrets.VITE_MAGIC_PUBLISHABLE_KEY }}
           VITE_WAR_CHEST_RECEIVER: ${{ secrets.VITE_WAR_CHEST_RECEIVER }}
+          # InsForge backend. Without VITE_INSFORGE_URL the deployed site silently
+          # disables cloud saves (src/lib/cloudSave.ts) and analytics
+          # (src/lib/telemetry.ts) — both no-op when the base URL is empty.
+          VITE_INSFORGE_URL: ${{ secrets.VITE_INSFORGE_URL }}
+          VITE_INSFORGE_ANON_KEY: ${{ secrets.VITE_INSFORGE_ANON_KEY }}
+          VITE_INSFORGE_FN_URL: ${{ secrets.VITE_INSFORGE_FN_URL }}
       - name: SPA fallback (Pages 404 -> index.html)
         run: cp dist/index.html dist/404.html
       - uses: actions/upload-pages-artifact@v3

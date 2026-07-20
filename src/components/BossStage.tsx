@@ -13,7 +13,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { createStage, webglAvailable } from "../three/engine";
-import { disposeMaterial, loadGLB } from "../three/loaders";
+import { disposeObject, loadGLB } from "../three/loaders";
+
+/** Hit-flash tint. Module-level so the per-frame decay allocates nothing. */
+const HIT_COLOR = new THREE.Color(0xff2a1a);
 
 interface BossStageProps {
   modelUrl: string;
@@ -73,6 +76,8 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
 
     const actions = new Map<string, THREE.AnimationAction>();
     let current: THREE.AnimationAction | null = null;
+    // The Dead → Arise hand-off is a timer; it must not outlive the effect.
+    let ariseTimer = 0;
 
     function play(name: string, o: { loop?: boolean; clamp?: boolean; fade?: number } = {}) {
       const next = actions.get(name);
@@ -98,8 +103,9 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
       play("Idle", { fade: 0.3 });
     });
 
-    function frameModel(obj: THREE.Object3D) {
-      const box = new THREE.Box3().setFromObject(obj);
+    // `box` is measured on the loader's master model, not on this clone — a
+    // cloned skeleton doesn't measure the same and yields a degenerate box.
+    function frameModel(obj: THREE.Object3D, box: THREE.Box3) {
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       obj.position.x -= center.x;
@@ -120,14 +126,14 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
       if (root) root.rotation.y += dt * 0.25;
       if (hitFlash > 0 && flashMat && baseEmissive) {
         hitFlash = Math.max(0, hitFlash - dt * 3);
-        flashMat.emissive.copy(baseEmissive).lerp(new THREE.Color(0xff2a1a), hitFlash);
+        flashMat.emissive.copy(baseEmissive).lerp(HIT_COLOR, hitFlash);
         flashMat.emissiveIntensity = 1 + hitFlash * 2.5;
       }
     });
 
     // --- Load the model. ---------------------------------------------------
     loadGLB(modelUrl)
-      .then(({ scene: model, animations }) => {
+      .then(({ scene: model, animations, box }) => {
         if (disposed) return;
         root = model;
         root.traverse((o) => {
@@ -136,13 +142,19 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
             mesh.frustumCulled = false; // skinned bounds are unreliable; keep drawn
             const mat = mesh.material as THREE.MeshStandardMaterial;
             if (mat && !flashMat) {
-              flashMat = mat;
-              baseEmissive = mat.emissive.clone();
+              // loadGLB clones the scene graph but SHARES materials with every
+              // other actor using this GLB, so the flash gets its own copy —
+              // otherwise a boss hit would tint every kek on screen. The clone
+              // is identical, so the look is unchanged.
+              const own = mat.clone();
+              mesh.material = own;
+              flashMat = own;
+              baseEmissive = own.emissive.clone();
             }
           }
         });
         scene.add(root);
-        frameModel(root);
+        frameModel(root, box);
 
         for (const clip of animations) actions.set(clip.name, mixer.clipAction(clip));
         play("Idle", { fade: 0 });
@@ -156,7 +168,9 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
           },
           die: () => {
             play("Dead", { loop: false, clamp: true, fade: 0.2 });
-            window.setTimeout(() => {
+            if (ariseTimer) window.clearTimeout(ariseTimer);
+            ariseTimer = window.setTimeout(() => {
+              ariseTimer = 0;
               if (!disposed) play("Arise", { loop: false });
             }, deadDur * 1000 + 500);
           },
@@ -171,18 +185,14 @@ export default function BossStage({ modelUrl, poster, hitToken, killToken, class
     return () => {
       disposed = true;
       unsub();
+      if (ariseTimer) window.clearTimeout(ariseTimer);
       mixer.stopAllAction();
       mixer.uncacheRoot(scene);
       ctrlRef.current = null;
-      scene.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.isMesh) {
-          mesh.geometry?.dispose();
-          const m = mesh.material;
-          if (Array.isArray(m)) m.forEach(disposeMaterial);
-          else if (m) disposeMaterial(m);
-        }
-      });
+      // disposeObject frees this stage's own geometry (the contact shadow) and
+      // the cloned flash material, and deliberately skips everything owned by
+      // the shared GLB cache — see three/loaders.
+      disposeObject(scene);
       stage.dispose();
     };
     // Re-init only when the model source changes.

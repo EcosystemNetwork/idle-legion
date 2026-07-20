@@ -34,7 +34,9 @@ import {
   healAll,
   healDweller,
   hitWorldBoss,
+  lastLoadOutcome,
   loadState,
+  resetSave,
   openLunchbox,
   recruitDweller,
   rerollMarket,
@@ -61,7 +63,6 @@ import {
   type Pull,
   type WorldBossHit,
 } from "../game/engine";
-import { STORAGE_KEY } from "../game/config";
 import type { CombatClass, GameState, GearSlot, LandKind, RoomType, Tier } from "../game/types";
 import {
   loadCloud,
@@ -76,6 +77,9 @@ import {
 // local save is the fast path; the cloud is a durable backup, not per-frame.
 const CLOUD_PUSH_MS = 15_000;
 
+/** How often idle drift is committed to localStorage (actions save instantly). */
+const LOCAL_SAVE_MS = 10_000;
+
 export function useGame() {
   const [state, setState] = useState<GameState>(() => loadState());
   const [error, setError] = useState<string | null>(null);
@@ -89,16 +93,34 @@ export function useGame() {
     stateRef.current = state;
   }, [state]);
 
+  // The 4Hz tick advances the sim only. It deliberately does NOT persist:
+  // serializing + hashing the whole save 4x/second cost up to 5.6ms/s of main
+  // thread on a big roster. Idle accrual is fully reconstructable from lastTick
+  // by applyOffline() on load, and every player ACTION saves immediately via
+  // wrap(), so the only thing a coarse timer needs to cover is the idle drift.
   useEffect(() => {
     const id = window.setInterval(() => {
       setNow(Date.now());
-      setState((s) => {
-        const next = tick(s, Date.now());
-        saveState(next);
-        return next;
-      });
+      setState((s) => tick(s, Date.now()));
     }, 250);
     return () => window.clearInterval(id);
+  }, []);
+
+  // Low-frequency safety save + a guaranteed flush when the tab goes away.
+  useEffect(() => {
+    const id = window.setInterval(() => saveState(stateRef.current), LOCAL_SAVE_MS);
+    const flush = () => saveState(stateRef.current);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flush(); // don't lose the tail on unmount
+    };
   }, []);
 
   // ---- Cloud persistence (InsForge) ------------------------------------------
@@ -107,23 +129,44 @@ export function useGame() {
   // (see syncIdentity) — signing in switches the player key, so we reconcile
   // against the (possibly cross-device) save stored under the new key.
   const hydratedRef = useRef(false);
+  // Monotonic token: several reconciles can be in flight (boot + identity
+  // change + StrictMode double-mount) and only the newest may apply its result.
+  const reconcileGen = useRef(0);
+
+  /**
+   * True when local state came from a real save. A state produced by a FAILURE
+   * path (unreadable save, blocked storage) must never be promoted to the cloud
+   * — that is what turned a local glitch into permanent account loss.
+   */
+  const localIsTrustworthy = useCallback(() => {
+    const outcome = lastLoadOutcome();
+    return outcome === "loaded" || outcome === "recovered";
+  }, []);
 
   const reconcileCloud = useCallback(async () => {
+    const gen = ++reconcileGen.current;
     const cloud = await loadCloud();
+    if (gen !== reconcileGen.current) return; // superseded by a newer reconcile
+
     if (cloud && cloud.savedAt > localSavedAt()) {
-      // Cloud is fresher than anything this device wrote — adopt it. Round-trip
-      // through local save/load so it gets the same merge + offline-catch-up as
-      // a normal boot, then mark ourselves in sync with that savedAt.
+      // Cloud is fresher than anything this device synced for this key — adopt.
+      // Round-trip through local save/load so it gets the same merge +
+      // offline-catch-up as a normal boot.
       saveState(cloud.state);
       setState(loadState());
       markCloudSynced(cloud.savedAt);
-    } else {
-      // Local is authoritative (fresh account, offline device, or first run) —
-      // push it up so the cloud reflects it.
+    } else if (localIsTrustworthy()) {
+      // Local is authoritative — push it up so the cloud reflects it.
       await saveCloud(stateRef.current);
+    } else if (cloud) {
+      // We have nothing trustworthy locally but the cloud has something: take it
+      // rather than overwriting it with a blank account.
+      saveState(cloud.state);
+      setState(loadState());
+      markCloudSynced(cloud.savedAt);
     }
     hydratedRef.current = true;
-  }, []);
+  }, [localIsTrustworthy]);
 
   useEffect(() => {
     void reconcileCloud();
@@ -133,21 +176,24 @@ export function useGame() {
   // tail of a session isn't lost. Gated on hydration so we never push local
   // over a not-yet-loaded fresher cloud save.
   useEffect(() => {
-    const id = window.setInterval(() => {
-      if (hydratedRef.current) void saveCloud(stateRef.current);
-    }, CLOUD_PUSH_MS);
-    const onHide = () => {
-      if (hydratedRef.current) void saveCloud(stateRef.current);
+    const push = () => {
+      // Never mirror a state we don't trust (see localIsTrustworthy).
+      if (hydratedRef.current && localIsTrustworthy()) void saveCloud(stateRef.current);
     };
-    window.addEventListener("pagehide", onHide);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") onHide();
-    });
+    const id = window.setInterval(push, CLOUD_PUSH_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") push();
+    };
+    window.addEventListener("pagehide", push);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(id);
-      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("pagehide", push);
+      // Previously an inline arrow, so this listener could never be removed —
+      // every remount leaked one and duplicated the push on each tab hide.
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [localIsTrustworthy]);
 
   // Called by the app when the player's identity changes (wallet connect /
   // logout). Repoints the player key and reconciles the save under it.
@@ -161,37 +207,37 @@ export function useGame() {
 
   const stats = useMemo(() => deriveStats(state), [state]);
 
+  /**
+   * Apply an engine action.
+   *
+   * The work happens OUTSIDE the setState updater on purpose. Engine actions
+   * throw for validation ("Not enough gold"), and React only sometimes evaluates
+   * an updater eagerly — when it doesn't, the throw escaped this try/catch,
+   * surfaced during render, and with no error boundary blanked the whole app.
+   * Updaters must also be pure, and this one was calling saveState().
+   *
+   * stateRef is advanced synchronously so two actions dispatched in the same
+   * render pass chain off each other instead of both branching from a stale
+   * snapshot (which silently discarded the first).
+   */
   const wrap = useCallback((fn: (s: GameState) => GameState) => {
     setError(null);
     try {
-      setState((s) => {
-        const next = fn(tick(s, Date.now()));
-        saveState(next);
-        return next;
-      });
+      const next = fn(tick(stateRef.current, Date.now()));
+      stateRef.current = next;
+      saveState(next);
+      setState(next);
     } catch (e) {
       setError((e as Error).message);
     }
   }, []);
 
-  // Functions that must return a result (gacha reveal / battle log).
-  const openBox = useCallback((): Pull | null => {
+  /** Same contract as wrap(), for actions that also return a result to the UI. */
+  const wrapResult = useCallback(<T,>(fn: (s: GameState) => { state: GameState; result: T }): T | null => {
     setError(null);
     try {
-      const { state: next, pull } = openLunchbox(tick(state, Date.now()));
-      saveState(next);
-      setState(next);
-      return pull;
-    } catch (e) {
-      setError((e as Error).message);
-      return null;
-    }
-  }, [state]);
-
-  const fight = useCallback((): FightResult | null => {
-    setError(null);
-    try {
-      const { state: next, result } = fightBoss(tick(state, Date.now()));
+      const { state: next, result } = fn(tick(stateRef.current, Date.now()));
+      stateRef.current = next;
       saveState(next);
       setState(next);
       return result;
@@ -199,36 +245,40 @@ export function useGame() {
       setError((e as Error).message);
       return null;
     }
-  }, [state]);
+  }, []);
+
+  // Functions that must return a result (gacha reveal / battle log).
+  const openBox = useCallback(
+    (): Pull | null =>
+      wrapResult((s) => {
+        const { state: next, pull } = openLunchbox(s);
+        return { state: next, result: pull };
+      }),
+    [wrapResult],
+  );
+
+  const fight = useCallback((): FightResult | null => wrapResult(fightBoss), [wrapResult]);
 
   // Strike the shared World Boss — returns the hit for combat juice.
-  const hitBoss = useCallback((): WorldBossHit | null => {
-    setError(null);
-    try {
-      const { state: next, hit } = hitWorldBoss(tick(state, Date.now()));
-      saveState(next);
-      setState(next);
-      return hit;
-    } catch (e) {
-      setError((e as Error).message);
-      return null;
-    }
-  }, [state]);
+  const hitBoss = useCallback(
+    (): WorldBossHit | null =>
+      wrapResult((s) => {
+        const { state: next, hit } = hitWorldBoss(s);
+        return { state: next, result: hit };
+      }),
+    [wrapResult],
+  );
 
   // LIVE-mode strike: spend stamina/XP + roll damage, but pay NOTHING locally
   // (the server owns the shared boss + the trustless payout). Returns the damage.
-  const strikeArena = useCallback((enemyClass?: CombatClass): number | null => {
-    setError(null);
-    try {
-      const { state: next, damage } = arenaStrike(tick(state, Date.now()), enemyClass);
-      saveState(next);
-      setState(next);
-      return damage;
-    } catch (e) {
-      setError((e as Error).message);
-      return null;
-    }
-  }, [state]);
+  const strikeArena = useCallback(
+    (enemyClass?: CombatClass): number | null =>
+      wrapResult((s) => {
+        const { state: next, damage } = arenaStrike(s, enemyClass);
+        return { state: next, result: damage };
+      }),
+    [wrapResult],
+  );
 
   const actions = useMemo(
     () => ({
@@ -291,8 +341,10 @@ export function useGame() {
       // Dev/admin escape hatch — shallow-merge an arbitrary state patch.
       devPatch: (patch: Partial<GameState>) => wrap((s) => ({ ...s, ...patch })),
       reset: () => {
-        localStorage.removeItem(STORAGE_KEY);
-        const fresh = loadState();
+        // resetSave clears the backup slot too — otherwise the next load would
+        // "recover" the save the player just asked to delete.
+        const fresh = resetSave();
+        stateRef.current = fresh;
         setState(fresh);
         // Overwrite the cloud copy so a reset roams too (fresh state, new stamp).
         void saveCloud(fresh);

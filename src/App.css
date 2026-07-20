@@ -1766,3 +1766,17 @@ code { background: rgba(0, 0, 0, 0.4); padding: 1px 5px; border-radius: 5px; fon
   background: rgba(255, 255, 255, 0.03);
   opacity: 0.85;
 }
+
+/* ================= CRASH SCREEN (ErrorBoundary) ================= */
+.crash { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
+  background: radial-gradient(70% 70% at 50% 35%, #1a1230, #0b0710); z-index: 9500; }
+.crash-card { max-width: 520px; text-align: center; padding: 26px 24px;
+  border: 3px solid #000; border-radius: 18px;
+  background: linear-gradient(180deg, #241a3a, #140f24);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6); }
+.crash-card h1 { font-family: var(--font-head); color: var(--gold); font-size: 26px; margin: 0 0 10px; }
+.crash-card p { color: #cfc6e0; font-size: 14px; line-height: 1.5; margin: 0 0 14px; }
+.crash-msg { font-family: ui-monospace, monospace; font-size: 12px; color: #ff9a8a;
+  background: rgba(0, 0, 0, 0.35); border-radius: 8px; padding: 10px; margin: 0 0 16px;
+  white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: auto; text-align: left; }
+.crash-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }

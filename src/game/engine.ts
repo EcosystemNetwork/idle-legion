@@ -282,12 +282,13 @@ const OBJ_BASE: Record<ObjectiveKind, number> = {
   heal: 3,
 };
 
-function makeObjective(kind: ObjectiveKind, mult: number): Objective {
+function makeObjective(kind: ObjectiveKind, mult: number, tier = 1): Objective {
   return {
     id: uid("o"),
     kind,
     target: Math.ceil(OBJ_BASE[kind] * mult),
     reward: 1,
+    tier,
   };
 }
 
@@ -330,14 +331,18 @@ export function claimObjective(state: GameState, objId: string): GameState {
   const o = state.objectives.find((x) => x.id === objId);
   if (!o) return state;
   if (objectiveProgress(state, o) < o.target) throw new Error("Objective not complete yet.");
-  // advance: replace with a harder objective of a rotating kind
+  // Advance: replace with a harder objective of a rotating kind.
+  // The ramp keys off `tier` (how many times this slot has been cleared), NOT
+  // `reward` — reward is a constant 1, so the old formula never grew and every
+  // claim past your lifetime totals minted a free crate.
   const nextKind = OBJ_ROTATION[(OBJ_ROTATION.indexOf(o.kind) + 1) % OBJ_ROTATION.length];
-  const mult = 1 + 0.6 * (o.reward + state.totalBossWins + 1);
+  const nextTier = (o.tier ?? 1) + 1;
+  const mult = 1 + 0.6 * (nextTier + state.totalBossWins);
   return {
     ...state,
     lunchboxes: state.lunchboxes + o.reward,
     objectives: state.objectives.map((x) =>
-      x.id === objId ? makeObjective(nextKind, mult) : x,
+      x.id === objId ? makeObjective(nextKind, mult, nextTier) : x,
     ),
   };
 }
@@ -548,9 +553,59 @@ export function deriveStats(state: GameState): DerivedStats {
 /** Damage per second an unresolved incident inflicts on the room's workers. */
 const INCIDENT_DPS = 4;
 
+/**
+ * Gaps longer than this are not "playing", they're a suspended laptop, a
+ * throttled background tab, or a clock jump — so they get credited on the
+ * offline terms (capped + at reduced efficiency) rather than at full rate.
+ */
+const TICK_CATCHUP_CAP_SEC = 300;
+
+/**
+ * Pull every persisted timestamp back to `now` after the clock moved backwards.
+ *
+ * It isn't enough to fix `lastTick`: room/bank/warChest stamps and every
+ * cooldown gate (`lastFightAt`, `lastHitAt`, `rushAt`, `summonReadyAt`) can also
+ * sit in the future, and each one independently stalls its own subsystem. This
+ * also *closes* the forward-jump exploit's tail — a player who jumped forward to
+ * clear cooldowns and then set the clock back finds them re-anchored, not
+ * preserved.
+ */
+function reanchorClocks(state: GameState, now: number): GameState {
+  const clamp = (t: number | undefined, fallback = now) =>
+    typeof t === "number" && Number.isFinite(t) ? Math.min(t, now) : fallback;
+  return {
+    ...state,
+    lastTick: now,
+    rooms: state.rooms.map((r) => ({ ...r, lastTick: now, rushAt: clamp(r.rushAt, 0) })),
+    bank: { ...state.bank, lastTick: now, stakedAt: clamp(state.bank.stakedAt) },
+    warChest: { ...state.warChest, lastTick: now },
+    arena: { ...state.arena, lastFightAt: clamp(state.arena.lastFightAt, 0) },
+    worldBoss: { ...state.worldBoss, lastHitAt: clamp(state.worldBoss.lastHitAt, 0) },
+    dwellers: state.dwellers.map((d) => ({ ...d, summonReadyAt: clamp(d.summonReadyAt, 0) })),
+  };
+}
+
 export function tick(state: GameState, now = Date.now()): GameState {
-  const elapsed = Math.max(0, (now - state.lastTick) / 1000);
-  if (elapsed <= 0) return state;
+  // A save stamped in the FUTURE (clock set forward, then corrected — or an NTP
+  // / DST / timezone correction) used to freeze the game solid: `raw` stayed <= 0
+  // so this returned unmodified forever, and applyOffline delegated straight
+  // back here. No room accrual, no stamina, no upkeep, no daily, no boss cycle,
+  // with no recovery path until real time caught up. Re-anchor instead.
+  if (now < state.lastTick) return reanchorClocks(state, now);
+
+  const raw = Math.max(0, (now - state.lastTick) / 1000);
+  if (raw <= 0) return state;
+  // Without this clamp, moving the system clock forward (or waking from sleep)
+  // with the tab open paid unbounded full-rate income — strictly better than
+  // closing the game, which bypassed the offline cap entirely.
+  //
+  // Continuous at the boundary: a 301s gap used to credit 150.5s while a 300s
+  // gap credited 300s, so a briefly-throttled tab was silently penalised ~50%.
+  const elapsed =
+    raw <= TICK_CATCHUP_CAP_SEC
+      ? raw
+      : TICK_CATCHUP_CAP_SEC +
+        (Math.min(raw, OFFLINE_CAP_SEC) - TICK_CATCHUP_CAP_SEC) * OFFLINE_EFFICIENCY;
 
   const fed = state.provisions > 0;
   let next: GameState = { ...state };
@@ -788,18 +843,38 @@ export function sellHero(state: GameState, id: string): GameState {
   const d = dwellerById(state, id);
   if (!d) return state;
   if (state.dwellers.length <= 1) throw new Error("Keep at least one gladiator in the legion.");
+  // Paid assets are the one thing a mis-click must never destroy: `descend`
+  // deliberately preserves them across every prestige, but sellHero happily
+  // vaporised a real-money Champion for ~40% of a *recruit's* price.
+  if (d.onchain) {
+    throw new Error("This gladiator was bought on-chain — it can't be sold back for gold.");
+  }
   const gold = heroSellValue(d);
+  // Every other removal path unassigns first; skipping it here left dead ids in
+  // room.workers, which permanently consumed the slot ("fully staffed" forever).
   return {
     ...state,
     gold: state.gold + gold,
     totalGoldEarned: state.totalGoldEarned + gold,
     dwellers: state.dwellers.filter((x) => x.id !== id),
+    rooms: state.rooms.map((r) =>
+      r.workers.includes(id) ? { ...r, workers: r.workers.filter((w) => w !== id) } : r,
+    ),
+    squad: state.squad.filter((s) => s !== id),
+    activeRaid: state.activeRaid
+      ? { ...state.activeRaid, squad: state.activeRaid.squad.filter((s) => s !== id) }
+      : state.activeRaid,
   };
 }
 
 export function sellGearItem(state: GameState, gearItemId: string): GameState {
   const item = state.gear.find((g) => g.id === gearItemId);
   if (!item) return state;
+  // See sellHero: on-chain purchases survive Descend, so they must survive a
+  // stray tap on the sell button too.
+  if (item.onchain) {
+    throw new Error("This piece was bought on-chain — it can't be sold back for gold.");
+  }
   const gold = gearSellValue(item.defId);
   const dwellers = state.dwellers.map((x) => {
     const eq = { ...x.equipped };
@@ -872,6 +947,13 @@ export function fuseGear(state: GameState, targetId: string, sacrificeId: string
     throw new Error("Fusion needs a duplicate of the same piece.");
   }
   if (gearAtMaxLevel(target)) throw new Error("This piece is already at max forge level.");
+  // fusionCandidates() hides equipped pieces, but the mutation never re-checked:
+  // feeding an equipped sacrifice deleted the item while leaving the wearer's
+  // `equipped` slot pointing at a dead id (stats silently gone, slot stuck).
+  const wearer = state.dwellers.find((d) =>
+    Object.values(d.equipped ?? {}).some((gid) => gid === sacrificeId),
+  );
+  if (wearer) throw new Error(`Unequip that piece from ${wearer.name} before fusing it.`);
   const newLevel = Math.min(GEAR_MAX_LEVEL, gearLevel(target) + FUSION_LEVELS);
   return {
     ...state,
@@ -1144,27 +1226,41 @@ const INCIDENT_LABELS: Record<IncidentKind, string> = {
 };
 
 /** Rush a room: instantly fill its storage, but risk an incident. */
+/** A room may only be rushed this often — without it, rushing was free income. */
+const RUSH_COOLDOWN_MS = 60_000;
+
 export function rushRoom(state: GameState, roomId: string): GameState {
   const room = roomById(state, roomId);
   if (!room) return state;
   if (roomStoreCap(room) <= 0) throw new Error("Nothing to rush in this room.");
   if (state.incident) throw new Error("Deal with the current incident first.");
+  // An empty room made rushing risk-free (the incident's only bite is damage to
+  // the workers inside), which turned it into an unbounded gold loop.
+  if (room.workers.length === 0) throw new Error("Assign a gladiator before rushing this room.");
+  const now = Date.now();
+  const since = now - (room.rushAt ?? 0);
+  if (since < RUSH_COOLDOWN_MS) {
+    throw new Error(`This room is still shaken — wait ${Math.ceil((RUSH_COOLDOWN_MS - since) / 1000)}s.`);
+  }
 
   // Risk scales with how full the room already is (like Fallout Shelter).
   const fillFrac = room.stored / roomStoreCap(room);
   const risk = Math.min(0.6, 0.15 + fillFrac * 0.5);
   const failed = Math.random() < risk;
 
+  // The cooldown is stamped on both outcomes, so a failed rush can't be retried
+  // instantly either.
   if (failed) {
     const kinds: IncidentKind[] = ["raiders", "cavein", "vermin"];
     const kind = kinds[Math.floor(Math.random() * kinds.length)];
     return {
       ...state,
+      rooms: state.rooms.map((r) => (r.id === roomId ? { ...r, rushAt: now } : r)),
       incident: {
         kind,
         roomId,
         label: INCIDENT_LABELS[kind],
-        endsAt: Date.now() + 12000,
+        endsAt: now + 12000,
       },
     };
   }
@@ -1172,7 +1268,7 @@ export function rushRoom(state: GameState, roomId: string): GameState {
   return {
     ...state,
     rooms: state.rooms.map((r) =>
-      r.id === roomId ? { ...r, stored: roomStoreCap(r) } : r,
+      r.id === roomId ? { ...r, stored: roomStoreCap(r), rushAt: now } : r,
     ),
   };
 }
@@ -1345,7 +1441,8 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
   // Resolve each fighter's fate: unhurt / wounded / downed / killed.
   const wounded: string[] = [];
   const downed: string[] = [];
-  const killed: string[] = [];
+  const killed: string[] = []; // names, for the report/log copy
+  const killedIds: string[] = []; // ids, for the actual roster removal
   const hpPatch = new Map<string, { hp: number; downed: boolean }>();
   for (const d of fighters) {
     const max = dwellerMaxHp(d);
@@ -1357,6 +1454,7 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
       const deathChance = Math.min(0.3, (mission.danger * 0.35) / margin);
       if (Math.random() < deathChance) {
         killed.push(d.name);
+        killedIds.push(d.id);
       } else {
         downed.push(d.name);
         hpPatch.set(d.id, { hp: 0, downed: true });
@@ -1367,7 +1465,9 @@ export function claimRaid(state: GameState, now = Date.now()): GameState {
     }
   }
 
-  const killedSet = new Set(fighters.filter((d) => killed.includes(d.name)).map((d) => d.id));
+  // Match casualties by id, never by name: the name pool is only 24 deep, so a
+  // name-keyed lookup killed every same-named hero when one of them died.
+  const killedSet = new Set(killedIds);
   const survivorIds = squadIds.filter((id) => !killedSet.has(id));
 
   const log = buildRaidLog(mission, edge, reward, wounded, downed, killed);
@@ -1511,9 +1611,30 @@ function dayIndex(now: number): number {
   return Math.floor(now / 86_400_000);
 }
 
+/**
+ * Minimum REAL time between daily claims. The day index alone is trivially
+ * farmed: set the OS clock +1 day, claim, repeat — ~2.1M gold and 33 crates a
+ * minute, with the streak intact because the gap stays inside DAILY_GRACE_DAYS.
+ * Requiring a real 20h gap as well means each iteration costs a further 20h of
+ * clock drift, which quickly wrecks the cheater's other cooldowns and is
+ * self-limiting rather than free.
+ *
+ * NOTE: this is a mitigation, not a fix. Client clocks are attacker-controlled;
+ * only a server-anchored day index closes it, and the edge functions to do that
+ * already exist. Tracked as a follow-up.
+ */
+const DAILY_MIN_GAP_MS = 20 * 3_600_000;
+
 /** Is a daily reward available to claim right now? */
 export function dailyAvailable(state: GameState, now = Date.now()): boolean {
-  return dayIndex(now) > state.daily.lastClaimDay;
+  if (dayIndex(now) <= state.daily.lastClaimDay) return false;
+  const last = state.daily.lastClaimAt;
+  // Clock moved backwards, or not enough real time has passed since the last claim.
+  if (typeof last === "number" && Number.isFinite(last)) {
+    if (now < last) return false;
+    if (now - last < DAILY_MIN_GAP_MS) return false;
+  }
+  return true;
 }
 
 /** What the next daily claim would pay (streak-scaled). */
@@ -1535,7 +1656,7 @@ export function claimDaily(state: GameState, now = Date.now()): GameState {
     gold: state.gold + gold,
     totalGoldEarned: state.totalGoldEarned + gold,
     lunchboxes: state.lunchboxes + lunchboxes,
-    daily: { lastClaimDay: dayIndex(now), streak },
+    daily: { lastClaimDay: dayIndex(now), streak, lastClaimAt: now },
   };
 }
 
@@ -1689,26 +1810,65 @@ export function dexPrice(state: GameState): number {
   return state.dex.poolGold > 0 ? state.dex.poolLegion / state.dex.poolGold : 0;
 }
 
+/**
+ * Guard the POOL RESERVES, not just the swap input.
+ *
+ * `loadState` only null-checked the `dex` object, never its fields, so a save
+ * carrying `dex:{}` (reachable from a corrupt local save or a hostile cloud
+ * save) produced `ammOut(x, undefined, undefined)` → NaN. The `out <= 0` guard
+ * below does NOT catch that, because `NaN <= 0` is false — so NaN flowed into
+ * gold, legion and both reserves and permanently bricked the save. Worse, the
+ * cloud validator then rejected every future push, so the corrupt local state
+ * could never be replaced either.
+ */
+function reservesOf(state: GameState): { gold: number; legion: number } {
+  const gold = state.dex?.poolGold;
+  const legion = state.dex?.poolLegion;
+  if (!Number.isFinite(gold) || gold <= 0 || !Number.isFinite(legion) || legion <= 0) {
+    throw new Error("The Exchange is closed — its liquidity is unreadable.");
+  }
+  return { gold, legion };
+}
+
 function ammOut(inAmt: number, inRes: number, outRes: number): number {
   const inWithFee = inAmt * (1 - DEX_FEE);
-  return (inWithFee * outRes) / (inRes + inWithFee);
+  const out = (inWithFee * outRes) / (inRes + inWithFee);
+  // Never let a non-finite result escape into the economy.
+  return Number.isFinite(out) && out > 0 ? out : 0;
 }
 
 export function quoteGoldToLegion(state: GameState, goldIn: number): number {
-  if (goldIn <= 0) return 0;
-  return ammOut(goldIn, state.dex.poolGold, state.dex.poolLegion);
+  if (!Number.isFinite(goldIn) || goldIn <= 0) return 0;
+  const r = state.dex?.poolGold;
+  const o = state.dex?.poolLegion;
+  if (!Number.isFinite(r) || r <= 0 || !Number.isFinite(o) || o <= 0) return 0;
+  return ammOut(goldIn, r, o);
 }
 
 export function quoteLegionToGold(state: GameState, legionIn: number): number {
-  if (legionIn <= 0) return 0;
-  return ammOut(legionIn, state.dex.poolLegion, state.dex.poolGold);
+  if (!Number.isFinite(legionIn) || legionIn <= 0) return 0;
+  const r = state.dex?.poolLegion;
+  const o = state.dex?.poolGold;
+  if (!Number.isFinite(r) || r <= 0 || !Number.isFinite(o) || o <= 0) return 0;
+  return ammOut(legionIn, r, o);
+}
+
+/**
+ * Reject NaN/Infinity before it reaches the economy. A non-finite input passes
+ * every `<`/`<=` comparison, so it used to flow straight into gold/legion/the
+ * pool reserves and permanently brick the save with NaN.
+ */
+function requireAmount(n: number, what: string): number {
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`Enter a valid amount to ${what}.`);
+  return n;
 }
 
 export function swapGoldForLegion(state: GameState, goldIn: number): GameState {
-  if (goldIn <= 0) throw new Error("Enter an amount to swap.");
+  requireAmount(goldIn, "swap");
+  reservesOf(state); // throws on unreadable liquidity before anything is spent
   if (state.gold < goldIn) throw new Error("Not enough gold.");
   const out = quoteGoldToLegion(state, goldIn);
-  if (out <= 0) throw new Error("Swap too small.");
+  if (!Number.isFinite(out) || out <= 0) throw new Error("Swap too small.");
   return {
     ...state,
     gold: state.gold - goldIn,
@@ -1718,15 +1878,18 @@ export function swapGoldForLegion(state: GameState, goldIn: number): GameState {
 }
 
 export function swapLegionForGold(state: GameState, legionIn: number): GameState {
-  if (legionIn <= 0) throw new Error("Enter an amount to swap.");
+  requireAmount(legionIn, "swap");
+  reservesOf(state); // throws on unreadable liquidity before anything is spent
   if (state.legion < legionIn) throw new Error("Not enough $LEGION.");
   const out = quoteLegionToGold(state, legionIn);
-  if (out <= 0) throw new Error("Swap too small.");
+  if (!Number.isFinite(out) || out <= 0) throw new Error("Swap too small.");
+  // Deliberately NOT counted in totalGoldEarned: a swap converts value you
+  // already hold, it doesn't earn any. Counting it let a wash-trade loop farm
+  // lifetime earnings (and therefore Renown) at the ~0.6% round-trip fee.
   return {
     ...state,
     legion: state.legion - legionIn,
     gold: state.gold + out,
-    totalGoldEarned: state.totalGoldEarned + out,
     dex: { poolLegion: state.dex.poolLegion + legionIn, poolGold: state.dex.poolGold - out },
   };
 }
@@ -1755,7 +1918,7 @@ function settleBank(state: GameState, now: number): GameState {
 }
 
 export function stakeLegion(state: GameState, amount: number, now = Date.now()): GameState {
-  if (amount <= 0) throw new Error("Enter an amount to stake.");
+  requireAmount(amount, "stake");
   if (state.legion < amount) throw new Error("Not enough $LEGION to stake.");
   const s = settleBank(state, now);
   return {
@@ -1766,7 +1929,7 @@ export function stakeLegion(state: GameState, amount: number, now = Date.now()):
 }
 
 export function unstakeLegion(state: GameState, amount: number, now = Date.now()): GameState {
-  if (amount <= 0) throw new Error("Enter an amount to unstake.");
+  requireAmount(amount, "unstake");
   if (state.bank.staked < amount) throw new Error("You haven't staked that much.");
   const s = settleBank(state, now);
   const fee = bankWithdrawFee(s, now);
@@ -2216,6 +2379,20 @@ export function openLunchbox(state: GameState): { state: GameState; pull: Pull }
   const rr = Math.random();
   const tier: Tier =
     rr < 0.5 ? "recruit" : rr < 0.78 ? "spearman" : rr < 0.92 ? "archer" : rr < 0.985 ? "cavalry" : "champion";
+  // The housing cap is enforced by recruitDweller, buySlave and summonHero — but
+  // NOT here, so crate spam grew the roster (and its provisions upkeep) past
+  // anything the Great Hall allowed. Pay gold instead when there's no bed free.
+  if (s.dwellers.length >= maxPopulation(s)) {
+    const consolation = Math.floor(TIERS[tier].recruitCost * 0.75);
+    return {
+      state: {
+        ...s,
+        gold: s.gold + consolation,
+        totalGoldEarned: s.totalGoldEarned + consolation,
+      },
+      pull: { kind: "gold", gold: consolation },
+    };
+  }
   const dweller = makeDweller(tier);
   return { state: { ...s, dwellers: [...s.dwellers, dweller] }, pull: { kind: "hero", dweller } };
 }
@@ -2259,6 +2436,10 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
   if (power <= 0) throw new Error("Your squad has no might.");
 
   const boss = currentBoss(state);
+  // Reference HP for scaling chip pay. The escalating final boss spawns above
+  // baseHp, so take whichever is larger — this stays >= the real spawn HP for
+  // most of a fight and never divides by zero.
+  const bossMax = Math.max(boss.baseHp, state.arena.bossHp);
   // Class matchup swings the whole hit (melee ▶ ranged ▶ charge ▶ melee).
   const edge = squadClassEdge(state, squad, boss.enemyClass);
   const dmg = Math.floor(power * (0.8 + Math.random() * 0.6) * edge);
@@ -2287,13 +2468,32 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
     s = { ...s, lunchboxes: s.lunchboxes + 1, totalBossWins: s.totalBossWins + 1 };
   } else {
     arena = { ...arena, bossHp: hp };
-    goldGain = Math.floor(boss.reward * 0.02);
+    // Chip pay is proportional to the damage actually dealt, so a full kill's
+    // chip totals at most 25% of the reward.
+    //
+    // It used to be a flat `reward * 0.02` on EVERY non-killing swing. That is
+    // an unbounded faucet: it fires at any power level, at a stamina-bound
+    // cadence of ~12.9s, forever — 78,400 gold/hour (1.88M/day) against Kekius,
+    // with no progression requirement. Worse, it's the asymptote the whole
+    // system converges to as boss HP scales, so raising boss HP made it MORE
+    // dominant. That floor alone cleared every gold sink in the game in 2.4 days.
+    const progress = bossMax > 0 ? Math.min(1, dmg / bossMax) : 0;
+    goldGain = Math.floor(boss.reward * progress * 0.25);
   }
 
   // The boss bites back: every swing costs stamina and draws blood. A fighter
   // whose class is countered soaks more — a downing carries them off until healed.
   const squadIds = new Set(squad.map((d) => d.id));
-  const downed: string[] = [];
+  const downed: string[] = []; // names, for the UI toast only
+  // Collect IDS as we go. This used to re-derive the set by matching NAMES
+  // against all downed dwellers — and randomName() draws from a 24-name pool, so
+  // duplicates are routine. Any *other* already-downed hero sharing a name got
+  // stripped from room.workers while its roomId still pointed at that room: an
+  // orphan that is neither idle (idleDwellers requires roomId == null) nor a
+  // worker, so it could never be squadded or auto-staffed again, and the room
+  // showed a phantom free slot. claimRaid was already fixed to key on ids; this
+  // is the same bug that was left behind here.
+  const downIds = new Set<string>();
   const dwellers = s.dwellers.map((d) => {
     if (!squadIds.has(d.id)) return d;
     const max = dwellerMaxHp(d);
@@ -2304,13 +2504,12 @@ export function fightBoss(state: GameState, now = Date.now()): { state: GameStat
     const stamina = Math.max(0, d.stamina - STAMINA_PER_FIGHT);
     if (nextHp <= 0) {
       downed.push(d.name);
+      downIds.add(d.id);
       return { ...d, hp: 0, downed: true, stamina, roomId: null };
     }
     return { ...d, hp: nextHp, stamina };
   });
   // pull any downed fighters out of rooms (belt-and-suspenders; arena squad is idle)
-  const downNames = new Set(downed);
-  const downIds = new Set(dwellers.filter((d) => d.downed && downNames.has(d.name)).map((d) => d.id));
   const rooms = downIds.size
     ? s.rooms.map((r) => ({ ...r, workers: r.workers.filter((w) => !downIds.has(w)) }))
     : s.rooms;
@@ -2336,10 +2535,18 @@ export function applyOffline(state: GameState, now: number): GameState {
 
   const capped = Math.min(elapsed, OFFLINE_CAP_SEC);
   const stats = deriveStats(state);
-  const gold = Math.floor(Math.max(0, stats.goldPerSec) * capped * OFFLINE_EFFICIENCY);
+  // deriveStats folds the vault into goldPerSec and the bank into legionPerSec
+  // for display, but ONLINE those two accrue to their own pools (warChest.stored
+  // / bank.accrued), not to the purse. Crediting the aggregate here as well as
+  // the pools below paid both of them out twice.
+  const vaultRate = warChestYield(state);
+  const bankRate = state.bank.staked * BANK_YIELD_PER_SEC;
+  const purseGoldRate = Math.max(0, stats.goldPerSec - vaultRate);
+  const purseLegionRate = Math.max(0, stats.legionPerSec - bankRate);
+  const gold = Math.floor(purseGoldRate * capped * OFFLINE_EFFICIENCY);
   const provisions = Math.floor(stats.provisionsPerSec * capped * OFFLINE_EFFICIENCY);
   const salves = Math.floor(Math.max(0, stats.salvesPerSec) * capped * OFFLINE_EFFICIENCY);
-  const legionGain = Math.max(0, stats.legionPerSec) * capped * OFFLINE_EFFICIENCY;
+  const legionGain = purseLegionRate * capped * OFFLINE_EFFICIENCY;
 
   // The Great Hall keeps raising recruits while you're away (if fed & housed).
   const hall = state.rooms.find((r) => r.type === "hall");
@@ -2348,8 +2555,13 @@ export function applyOffline(state: GameState, now: number): GameState {
     const space = Math.max(0, maxPopulation(state) - state.dwellers.length);
     recruits = Math.min(space, Math.floor(0.04 * hall.level * capped * OFFLINE_EFFICIENCY));
   }
-  // Everyone rests up while the tab is closed — stamina back to full.
-  const dwellers = state.dwellers.map((d) => ({ ...d, stamina: MAX_STAMINA }));
+  // Everyone rests while the tab is closed — but at the normal idle rate, not a
+  // free full refill. A flat reset meant a 61-second absence recharged the whole
+  // roster, turning the stamina gate on raids/arena into a reload button.
+  const dwellers = state.dwellers.map((d) => ({
+    ...d,
+    stamina: Math.min(MAX_STAMINA, d.stamina + STAMINA_REGEN_IDLE * capped),
+  }));
   for (let i = 0; i < recruits; i++) dwellers.push(makeDweller("recruit"));
 
   // The vault keeps yielding while you're away (offline efficiency applies).
@@ -2407,25 +2619,85 @@ function signSave(json: string): string {
   return (h >>> 0).toString(36);
 }
 
-export function loadState(): GameState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createInitialState();
+/**
+ * How the last loadState() went. The app uses this to decide whether it is safe
+ * to promote local state to the cloud: a save produced by a FAILURE path must
+ * never overwrite a good cloud backup (that turned any local read glitch into
+ * permanent, cloud-inclusive account loss).
+ */
+export type LoadOutcome =
+  | "loaded" // a real save was read
+  | "fresh" // no save present — genuinely a new player
+  | "recovered" // primary was unreadable, the backup slot saved us
+  | "corrupt" // a save existed but could not be read at all
+  | "unavailable"; // storage itself threw (private mode / blocked cookies)
 
+let lastOutcome: LoadOutcome = "fresh";
+export function lastLoadOutcome(): LoadOutcome {
+  return lastOutcome;
+}
+
+/** Rolling previous-save slot, so one bad write can't be the only copy. */
+const BACKUP_KEY = `${STORAGE_KEY}:bak`;
+
+/** Parse one stored blob into a GameState, or null if it isn't usable. */
+/** Coerce a persisted number, rejecting NaN/Infinity/garbage. */
+function num(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+/** Like {@link num} but the value must also be strictly positive (AMM reserves). */
+function pos(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function decodeSave(raw: string): GameState | null {
+  try {
     const outer = JSON.parse(raw) as { sig?: string; data?: string };
     let parsed: GameState;
     if (outer && typeof outer.data === "string" && typeof outer.sig === "string") {
-      // Signed save — reject if the integrity signature doesn't match (Fix #5).
-      if (signSave(outer.data) !== outer.sig) return createInitialState();
+      // Signed save — a mismatch means the blob was truncated or hand-edited.
+      if (signSave(outer.data) !== outer.sig) return null;
       parsed = JSON.parse(outer.data) as GameState;
     } else {
       // Legacy unsigned save — accept once; it re-saves signed on next write.
       parsed = outer as unknown as GameState;
     }
+    if (!parsed || !Array.isArray(parsed.rooms) || !Array.isArray(parsed.dwellers)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
-    if (!parsed || !Array.isArray(parsed.rooms) || !Array.isArray(parsed.dwellers)) {
-      return createInitialState();
-    }
+export function loadState(): GameState {
+  let raw: string | null = null;
+  let bak: string | null = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+    bak = localStorage.getItem(BACKUP_KEY);
+  } catch {
+    // Storage is blocked entirely (Safari private mode, partitioned iframe).
+    // Flagged so we never push this empty session over a real cloud save.
+    lastOutcome = "unavailable";
+    return createInitialState();
+  }
+
+  if (!raw && !bak) {
+    lastOutcome = "fresh";
+    return createInitialState();
+  }
+
+  let parsed = raw ? decodeSave(raw) : null;
+  if (parsed) {
+    lastOutcome = "loaded";
+  } else {
+    parsed = bak ? decodeSave(bak) : null;
+    lastOutcome = parsed ? "recovered" : "corrupt";
+  }
+  if (!parsed) return createInitialState();
+
+  try {
     // Merge over a fresh state so new fields (squad/renown/warChest/…) always exist.
     const base = createInitialState();
     const merged: GameState = {
@@ -2448,14 +2720,43 @@ export function loadState(): GameState {
           hp: withDefaults.hp > 0 ? Math.min(withDefaults.hp, max) : max,
         };
       }),
+      // Per-element backfill for arrays too — a missing nested field used to
+      // throw mid-merge and get swallowed into "brand new game".
+      rooms: parsed.rooms.map((r) => ({ ...r, workers: Array.isArray(r.workers) ? r.workers : [] })),
+      objectives: Array.isArray(parsed.objectives)
+        ? parsed.objectives.map((o) => ({ ...o, tier: typeof o.tier === "number" ? o.tier : 1 }))
+        : base.objectives,
+      gear: Array.isArray(parsed.gear) ? parsed.gear : base.gear,
       warChest: parsed.warChest ?? base.warChest,
       daily: parsed.daily ?? base.daily,
-      // New economy substructures — always ensure a valid shape exists.
-      legion: typeof parsed.legion === "number" ? parsed.legion : base.legion,
-      dex: parsed.dex ?? base.dex,
-      bank: parsed.bank ?? base.bank,
+      // New economy substructures. These are sanitised FIELD BY FIELD, not just
+      // null-checked: a save carrying `dex:{}` or a non-finite reserve used to
+      // flow NaN straight into the pool and permanently brick the account.
+      legion: num(parsed.legion, base.legion),
+      dex: {
+        poolGold: pos(parsed.dex?.poolGold, base.dex.poolGold),
+        poolLegion: pos(parsed.dex?.poolLegion, base.dex.poolLegion),
+      },
+      bank: {
+        staked: num(parsed.bank?.staked, 0),
+        stakedAt: num(parsed.bank?.stakedAt, base.bank.stakedAt),
+        accrued: num(parsed.bank?.accrued, 0),
+        lastTick: num(parsed.bank?.lastTick, base.bank.lastTick),
+      },
       land: Array.isArray(parsed.land) ? parsed.land : base.land,
-      pvp: parsed.pvp ?? base.pvp,
+      pvp: parsed.pvp
+        ? {
+            ...base.pvp,
+            ...parsed.pvp,
+            rating: num(parsed.pvp.rating, base.pvp.rating),
+            wins: num(parsed.pvp.wins, 0),
+            losses: num(parsed.pvp.losses, 0),
+            streak: num(parsed.pvp.streak, 0),
+            attacksLeft: num(parsed.pvp.attacksLeft, base.pvp.attacksLeft),
+            lastReset: num(parsed.pvp.lastReset, base.pvp.lastReset),
+            lastResult: null,
+          }
+        : base.pvp,
       worldBoss: parsed.worldBoss ?? base.worldBoss,
       squad: Array.isArray(parsed.squad) ? parsed.squad : [],
       offlineSummary: null,
@@ -2463,18 +2764,58 @@ export function loadState(): GameState {
       levelUps: [],
     };
     return applyOffline(merged, Date.now());
-  } catch {
+  } catch (err) {
+    // The save decoded fine but migrating/catching-up threw. Returning a new
+    // game here is the last resort — surface it so the cloud push is suppressed
+    // rather than silently overwriting a good backup with an empty account.
+    console.error("[loadState] migration failed", err);
+    lastOutcome = "corrupt";
     return createInitialState();
   }
 }
+
+/**
+ * Wipe the save (both slots) and return a fresh game.
+ *
+ * Must clear the BACKUP slot too, or the next load would "recover" the very save
+ * the player asked to delete. The outcome is marked trustworthy because this is
+ * an intentional new game, so it is allowed to replace the cloud copy.
+ */
+export function resetSave(): GameState {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(BACKUP_KEY);
+  } catch {
+    /* ignore */
+  }
+  lastBackupAt = Date.now(); // don't immediately re-backup the old blob
+  const fresh = createInitialState();
+  lastOutcome = "loaded";
+  saveState(fresh);
+  return fresh;
+}
+
+/** Roll the previous save into the backup slot at most this often. */
+const BACKUP_EVERY_MS = 5 * 60_000;
+let lastBackupAt = 0;
 
 export function saveState(state: GameState) {
   try {
     // Never persist one-time UI events (offline report / raid report / level-ups).
     const data = JSON.stringify({ ...state, offlineSummary: null, raidReport: null, levelUps: [] });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sig: signSave(data), data }));
-  } catch {
-    // storage full / unavailable — ignore
+    const blob = JSON.stringify({ sig: signSave(data), data });
+    // Keep a rolling previous copy so a truncated/interrupted write is survivable.
+    const now = Date.now();
+    if (now - lastBackupAt > BACKUP_EVERY_MS) {
+      const prev = localStorage.getItem(STORAGE_KEY);
+      if (prev) localStorage.setItem(BACKUP_KEY, prev);
+      lastBackupAt = now;
+    }
+    localStorage.setItem(STORAGE_KEY, blob);
+  } catch (err) {
+    // Quota exceeded / storage blocked. Previously silent, which meant a player
+    // could play for hours against a save that was never actually written.
+    console.error("[saveState] write failed", err);
   }
 }
 

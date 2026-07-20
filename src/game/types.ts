@@ -124,6 +124,8 @@ export interface Room {
   workers: string[]; // dweller ids assigned here
   stored: number; // accrued, uncollected resource
   lastTick: number;
+  /** When this room was last rushed — gates the rush cooldown. */
+  rushAt?: number;
 }
 
 export interface RaidMission {
@@ -176,6 +178,12 @@ export interface Objective {
   kind: ObjectiveKind;
   target: number;
   reward: number; // lunchboxes granted
+  /**
+   * How many times this slot has been completed. Drives the difficulty ramp —
+   * without it the target never escalated, so once your lifetime counters passed
+   * the fixed goal every claim handed out a free crate.
+   */
+  tier: number;
 }
 
 export interface BossDef {
@@ -244,6 +252,8 @@ export interface OfflineSummary {
 export interface DailyState {
   lastClaimDay: number; // epoch-day index of the last claim (0 = never)
   streak: number; // consecutive days claimed
+  /** Wall-clock ms of the last claim — enforces a real gap, not just a day flip. */
+  lastClaimAt?: number;
 }
 
 /** The on-chain Treasury Vault: staked USD keeps yielding gold, run after run. */

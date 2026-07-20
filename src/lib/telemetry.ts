@@ -17,6 +17,15 @@ const OPTOUT_KEY = "idle-legion-analytics"; // "off" = player opted out
 const PII_KEY = "idle-legion-analytics-pii"; // "on" = allow identity fields
 const FLUSH_MS = 5000;
 const MAX_BATCH = 40;
+/** A stalled network must not park a fetch forever — see flush(). */
+const FLUSH_TIMEOUT_MS = 8000;
+/** Hard ceiling on the live queue so a long offline stretch can't grow it. */
+const MAX_QUEUE = 500;
+
+// trackingAllowed() runs on every tracked click and hits localStorage, which is
+// synchronous and main-thread. Nothing it reads changes except through
+// setAnalyticsOptOut, so the answer is memoized and invalidated there.
+let allowedCache: boolean | null = null;
 
 /**
  * Honour browser privacy signals and an explicit opt-out. Do Not Track and
@@ -24,6 +33,11 @@ const MAX_BATCH = 40;
  * nothing is sent.
  */
 export function trackingAllowed(): boolean {
+  if (allowedCache === null) allowedCache = computeTrackingAllowed();
+  return allowedCache;
+}
+
+function computeTrackingAllowed(): boolean {
   if (!BASE) return false;
   try {
     const nav = navigator as Navigator & {
@@ -64,6 +78,7 @@ export function setAnalyticsOptOut(off: boolean) {
   } catch {
     /* ignore */
   }
+  allowedCache = null; // the memoized answer just changed
   if (off) {
     queue = [];
     pendingActiveMs = 0;
@@ -122,6 +137,9 @@ export function identify(next: { email?: string | null; walletAddress?: string |
 export function track(name: string, type: TrackEvent["type"] = "click", meta?: Record<string, unknown>) {
   if (!name || !trackingAllowed()) return;
   queue.push({ name: name.slice(0, 200), type, ts: Date.now(), meta });
+  // Offline/blocked players keep clicking; drop the oldest rather than grow
+  // without bound (the re-queue path in flush() is capped the same way).
+  if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
   if (queue.length >= MAX_BATCH) void flush();
 }
 
@@ -155,10 +173,18 @@ export function setScreen(name: string) {
   currentScreen = name;
 }
 
+// Only one network flush is allowed in flight. track() calls flush() every 40
+// events, so on a stalled connection the old code piled up hung requests that
+// head-of-line-blocked the same origin — which also stalled cloud saves.
+let flushing = false;
+
 export async function flush(useBeacon = false): Promise<void> {
   harvestActive();
   // Always flush when there's engagement time to report, even with no events.
   if (!trackingAllowed() || (queue.length === 0 && pendingActiveMs < 1000)) return;
+  // The pagehide flush must go out even mid-flush, so it bypasses the guard;
+  // only ordinary flushes are serialised.
+  if (flushing && !useBeacon) return;
   const batch = queue;
   queue = [];
   const activeMs = pendingActiveMs;
@@ -179,20 +205,36 @@ export async function flush(useBeacon = false): Promise<void> {
     events: batch,
   });
   const url = `${BASE}/functions/track`;
+  // NOT sendBeacon, deliberately. A beacon is always sent with credentials mode
+  // "include", and the ingest gateway answers with `Access-Control-Allow-Origin: *`
+  // alongside `Access-Control-Allow-Credentials: true` — a pairing CORS forbids, so
+  // the browser drops every beacon response and the pagehide batch never lands. The
+  // gateway rewrites that header itself, so the function can't opt out of the
+  // wildcard; an uncredentialed keepalive fetch is what we control. `keepalive`
+  // gives us the same survives-the-unload guarantee (64KB cap, and a batch is
+  // capped at 200 events well under it).
+  // The pagehide flush skipped the guard above, so it must not own the flag
+  // either — clearing it on the way out would un-serialise a flush still in
+  // flight beside it.
+  if (!useBeacon) flushing = true;
   try {
-    if (useBeacon && navigator.sendBeacon) {
-      navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
-      return;
-    }
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: payload,
       keepalive: useBeacon,
+      credentials: "omit",
+      // Without this a stalled socket never settles the promise and the batch
+      // (plus its engagement time) is stuck forever. On the pagehide path there is
+      // no one left to await the result, and arming a timer against a document
+      // that's going away can abort an otherwise-deliverable keepalive request.
+      signal: useBeacon ? undefined : AbortSignal.timeout(FLUSH_TIMEOUT_MS),
     });
   } catch {
     // Best-effort: re-queue so a transient failure doesn't lose the batch.
     queue = batch.concat(queue).slice(-200);
+  } finally {
+    if (!useBeacon) flushing = false;
   }
 }
 
@@ -224,35 +266,44 @@ export function initTelemetry() {
   track(location.pathname || "/", "pageview");
 
   // Delegated click capture — every button/link the player taps, by label.
-  document.addEventListener(
-    "click",
-    (e) => {
-      const label = labelFor(e.target as Element);
-      if (label) track(`click:${label}`, "click");
-    },
-    { capture: true },
-  );
+  document.addEventListener("click", onDocClick, { capture: true });
 
   timer = window.setInterval(() => void flush(), FLUSH_MS);
 
   // Don't lose the tail when the tab closes.
-  const finalFlush = () => void flush(true);
-  window.addEventListener("pagehide", finalFlush);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      harvestActive();     // bank the active stretch that just ended
-      activeStart = 0;     // pause the engagement clock while hidden
-      finalFlush();
-    } else {
-      activeStart = Date.now(); // resume on refocus
-    }
-  });
+  window.addEventListener("pagehide", onPageHide);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+}
+
+// Handler refs live at module scope so stopTelemetry can actually remove them.
+// stopTelemetry clears `started`, so without this a re-init (opt out, opt back
+// in) would stack a second click listener and double-count every click.
+function onDocClick(e: Event) {
+  const label = labelFor(e.target as Element);
+  if (label) track(`click:${label}`, "click");
+}
+
+function onPageHide() {
+  void flush(true);
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    harvestActive();     // bank the active stretch that just ended
+    activeStart = 0;     // pause the engagement clock while hidden
+    void flush(true);
+  } else {
+    activeStart = Date.now(); // resume on refocus
+  }
 }
 
 export function stopTelemetry() {
   if (timer != null) window.clearInterval(timer);
   timer = null;
   started = false;
+  document.removeEventListener("click", onDocClick, { capture: true });
+  window.removeEventListener("pagehide", onPageHide);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 }
 
 // ---- admin dashboard read (token-gated) ----

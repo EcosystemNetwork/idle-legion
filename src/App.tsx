@@ -49,6 +49,7 @@ import {
   ASSET_CATALOG,
   ASSET_TYPE_LABEL,
   assetsByType,
+  thumbOf,
   type AssetType,
 } from "./game/assets";
 import {
@@ -328,7 +329,7 @@ export default function App() {
   const game = useGame();
   const { state, stats, error: gameError, now, actions, syncIdentity } = game;
   const wallet = useWallet();
-  const [tab, setTab] = useState<Tab>("kingdom");
+  const [tab, setTab] = useState<Tab>("stronghold");
   const [assignRoomId, setAssignRoomId] = useState<string | null>(null);
   const [heroId, setHeroId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Pull | null>(null);
@@ -699,7 +700,17 @@ export default function App() {
           <br />
           <PrivacyNote />
         </p>
-        <button type="button" className="btn ghost" onClick={() => actions.reset()}>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => {
+            // This wipes localStorage AND overwrites the cloud copy, with no
+            // undo — it had no confirmation at all.
+            if (window.confirm("Delete your legion and start over? This erases your save on this device and in the cloud. It cannot be undone.")) {
+              actions.reset();
+            }
+          }}
+        >
           Reset save
         </button>
       </footer>
@@ -1377,14 +1388,20 @@ function LevelUpLayer({ events, onDrain }: { events: LevelUpEvent[]; onDrain: ()
   }, [events]);
 
   // Clear the queue (and the shown-set) after the last event has had its moment.
+  // onDrain is held in a ref and kept OUT of the deps: it's a fresh arrow on
+  // every App render, and App re-renders 4x/second from the game tick, so
+  // depending on it re-armed this timeout before it could ever elapse — the
+  // toasts stayed pinned on screen for the rest of the session.
+  const drainRef = useRef(onDrain);
+  drainRef.current = onDrain;
   useEffect(() => {
     if (events.length === 0) {
       shown.current.clear();
       return;
     }
-    const t = window.setTimeout(onDrain, events.length * 240 + 2400);
+    const t = window.setTimeout(() => drainRef.current(), events.length * 240 + 2400);
     return () => window.clearTimeout(t);
-  }, [events, onDrain]);
+  }, [events]);
 
   if (events.length === 0) return null;
   return (
@@ -2480,7 +2497,8 @@ function CodexView() {
                   style={{ ["--rar" as string]: RARITY_META[a.rarity].color }}
                   title={a.desc}
                 >
-                  <img className="codex-img" src={a.img} alt={a.name} loading="lazy" />
+                  {/* Grid uses the 256px thumb; the detail modal keeps a.img. */}
+                  <img className="codex-img" src={thumbOf(a)} alt={a.name} loading="lazy" />
                   <div className="codex-body">
                     <div className="codex-name">{a.name}</div>
                     <div className="codex-rar" style={{ color: RARITY_META[a.rarity].color }}>
@@ -2809,7 +2827,7 @@ function DuelsView({ state, actions }: { state: GameState; actions: Actions }) {
           ? srv!.opponents.map((o) => {
               const edge = classEdgeVerdict(squadClassEdge(state, arenaSquad(state), o.combatClass));
               return (
-                <article key={o.playerKey} className="duel-card real">
+                <article key={o.oppId} className="duel-card real">
                   <div className="dc-head">
                     <span className="dc-name">🌐 {o.name}</span>
                     <ClassBadge cls={o.combatClass} small />

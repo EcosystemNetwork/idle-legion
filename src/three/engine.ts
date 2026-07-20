@@ -129,8 +129,12 @@ export function createStage(host: HTMLElement, opts: StageOptions = {}): Stage {
   const camera = new THREE.PerspectiveCamera(fov, aspect(host), near, far);
 
   // Soft image-based lighting without shipping an HDR file.
+  // The room is a throwaway scene of its own geometry/materials, only needed
+  // while the PMREM bakes — dispose it or every stage leaks one.
   const pmrem = new THREE.PMREMGenerator(renderer);
-  const envRT = pmrem.fromScene(new RoomEnvironment(), envRoughness);
+  const room = new RoomEnvironment();
+  const envRT = pmrem.fromScene(room, envRoughness);
+  room.dispose();
   scene.environment = envRT.texture;
 
   // --- Optional bloom chain. Skipped entirely on the low tier. --------------

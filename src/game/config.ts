@@ -39,9 +39,15 @@ export const RENOWN_BOOST_PER = 0.03; // +3% output per Renown
 /** HP each level adds, as a fraction of the tier's base HP. */
 export const HP_PER_LEVEL = 0.1;
 /** Salves consumed to heal one full HP bar's worth of wounds. */
-export const SALVES_PER_FULL_HEAL = 12;
+/**
+ * A staffed Infirmary produces 1.5–17.5 salves/sec depending on tier, so a flat
+ * 12 made healing free (157× oversupply) and turned every wound, revive cost and
+ * boss `bite` value into decoration. Priced so a full heal costs roughly a
+ * minute of a matched Infirmary's output.
+ */
+export const SALVES_PER_FULL_HEAL = 400;
 /** Reviving a downed fighter costs this multiple of a full heal. */
-export const REVIVE_SALVE_MULT = 1.6;
+export const REVIVE_SALVE_MULT = 3;
 /** Provisions upkeep is paid; a downed fighter still eats but produces nothing. */
 
 // ---------- Stamina (DeFi-Kingdoms energy gate on raids/arena) ----------
@@ -103,9 +109,12 @@ export const DAILY_GRACE_DAYS = 1;
 
 // ---------- On-chain Treasury Vault yield (DFK bank / real-yield) ----------
 /** Gold/sec the vault yields per USD ever staked on-chain — a run-spanning faucet. */
-export const WARCHEST_YIELD_PER_USD = 0.9;
+/** $1 previously printed 77,760 gold/day — permanently, surviving every Descend,
+ *  and ~45× the in-game value of the $0.30 flagship hero listing. Now ~1,728/day
+ *  (about a third of a starter mine): a real boost, not a bypass. */
+export const WARCHEST_YIELD_PER_USD = 0.02;
 /** Vault storage cap = staked USD × this (so it must be collected, like a room). */
-export const WARCHEST_STORE_PER_USD = 1800;
+export const WARCHEST_STORE_PER_USD = 40; // keeps the ~2,000s collection cadence at the new rate
 
 // ============================================================
 //  DEEP ECONOMY — summoning, DEX, bank, land, world boss, PvP
@@ -130,14 +139,26 @@ export const MAX_RECESSIVE = 3;
 
 // ---------- DEX (constant-product AMM: gold ⇄ $LEGION) ----------
 export const DEX_FEE = 0.003; // 0.3% swap fee, kept in the pool (LP value ↑)
-export const DEX_SEED_GOLD = 12_000;
+/**
+ * Seeded 1,000 gold : 1 $LEGION, NOT 1:1.
+ *
+ * Gold income runs ~300k/day mid-game while every $LEGION faucet combined is
+ * ~176/day — a ~1,700× gap. At the old 12k:12k seed, 50k gold (≈20 minutes of
+ * arena) bought 9,672 $LEGION: 55 days of every other faucet, and 3× the cost of
+ * the entire land tree. That single ratio deleted every $LEGION sink in the game
+ * (land claims, summoning, staking). At 1,000:1 the first land claim is ~40k
+ * gold and the full land tree ~3.5M, making it the run's largest sink.
+ */
+export const DEX_SEED_GOLD = 12_000_000;
 export const DEX_SEED_LEGION = 12_000;
 
 // ---------- Bank (single-stake $LEGION → real-yield emissions) ----------
 /** $LEGION yielded per second per $LEGION staked (base emission).
  *  0.0000009/s × 86,400 = ~7.8%/day. (Was 0.0009 — a 1000× typo that paid 77×
  *  the principal per DAY and made every $LEGION sink meaningless.) */
-export const BANK_YIELD_PER_SEC = 0.0000009; // ~7.8%/day
+/** ~1%/day. 7.8%/day still compounded to 9.4× in 30 days via a two-click
+ *  stake/claim loop — enough to mint the whole land tree from a 1,000 stake. */
+export const BANK_YIELD_PER_SEC = 0.00000012; // ~1%/day
 /** Anti-mercenary withdrawal fee decays with time staked (DFK schedule). */
 export const BANK_FEE_SCHEDULE: { underMs: number; fee: number }[] = [
   { underMs: 60_000, fee: 0.25 }, // < 1 min
@@ -150,16 +171,24 @@ export const BANK_FEE_SCHEDULE: { underMs: number; fee: number }[] = [
 export const LAND_SLOTS = 9;
 export const LAND_CLAIM_BASE_LEGION = 40; // rises with each parcel owned
 export const LAND_UPGRADE_BASE_GOLD = 500;
-/** Min legion MIGHT to be allowed to claim territory (hero-gated). */
-export const LAND_MIN_MIGHT = 120;
+/**
+ * Min legion MIGHT to claim territory. The starting roster (2 recruits + a
+ * spearman + the free Champion) is already 178 might, so the old 120 gate was
+ * satisfied on the opening frame — land was never actually hero-gated.
+ */
+export const LAND_MIN_MIGHT = 900;
 /** Per-second yield of a level-1 parcel, by kind. Scales linearly with level. */
 export const LAND_YIELD: Record<
   "gold" | "provisions" | "salves" | "legion" | "might",
   number
 > = {
-  gold: 6,
-  provisions: 1.2,
-  salves: 0.5,
+  // 0.06/s ≈ 5,184 gold/day/level — comparable to a staffed mine, ~1h payback on
+  // the L1→L2 upgrade. (Was 6 = 518,400/day/level: an 83-SECOND payback, and nine
+  // maxed parcels out-earned the game's entire lifetime sink inventory hourly.
+  // Same class of magnitude error as the `legion` fix below, on the other side.)
+  gold: 0.06,
+  provisions: 0.6,
+  salves: 0.02,
   // ~20 $LEGION/day per level — a ~2-day payback on the 40-$LEGION claim, and the
   // same order as ladder/boss income. (Was 0.12 = 10,368/day, ~500× every sink.)
   legion: 0.00023,
@@ -455,7 +484,13 @@ export const RAIDS: RaidMission[] = [
 ];
 
 /** Provisions upkeep per dweller per second. */
-export const UPKEEP_PER_DWELLER = 0.05;
+/**
+ * At 0.05/s a full 48-dweller roster drained 2.4/s, while a level-1 Granary with
+ * two archers makes 17.5/s — 7× the entire endgame's needs. STARVING_PENALTY
+ * could never fire after the first two minutes, so provisions weren't a resource.
+ * At 0.6/s peak drain is 28.8/s: a Granary you must actually keep staffed.
+ */
+export const UPKEEP_PER_DWELLER = 0.6;
 /** Production penalty when provisions are exhausted. */
 export const STARVING_PENALTY = 0.5;
 /** Aptitude-match production bonus. */

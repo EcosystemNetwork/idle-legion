@@ -7,11 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:boss": "node scripts/build-boss.mjs",
+    "thumbs": "node scripts/thumbs.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/model-viewer": "^4.3.1",
     "@particle-network/universal-account-sdk": "^2.0.3",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",

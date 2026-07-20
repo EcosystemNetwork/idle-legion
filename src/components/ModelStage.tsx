@@ -119,7 +119,7 @@ export default function ModelStage({
     mixer.addEventListener("finished", onFinished as never);
 
     loadGLB(src)
-      .then(({ scene: model, animations }) => {
+      .then(({ scene: model, animations, box }) => {
         if (disposed) {
           disposeObject(model);
           return;
@@ -131,7 +131,6 @@ export default function ModelStage({
         });
 
         // Drop feet to y=0, recentre, and frame the camera on it.
-        const box = new THREE.Box3().setFromObject(root);
         const size = box.getSize(new THREE.Vector3());
         const centre = box.getCenter(new THREE.Vector3());
         root.position.x -= centre.x;
@@ -170,6 +169,10 @@ export default function ModelStage({
       portal.dispose();
       mixer.removeEventListener("finished", onFinished as never);
       mixer.stopAllAction();
+      // `root` is a clone sharing geometry/materials with the loader's cached
+      // master, so this frees nothing shared (see three/loaders) — dropping the
+      // reference is the whole teardown. Freeing them here would blank every
+      // other actor still rendering the same model.
       if (root) disposeObject(root);
     };
   }, [src, anim, breakKey, spin, aim, zoom, fov, supported]);

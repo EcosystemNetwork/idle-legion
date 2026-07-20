@@ -57,6 +57,8 @@ export interface KingdomHandle {
 interface BuildingEntry {
   def: BuildingDef;
   group: THREE.Group;
+  /** Child of `group` holding everything visible; the hover lift moves THIS. */
+  visual: THREE.Group;
   windows: THREE.MeshStandardMaterial;
   art: THREE.Sprite; // the building billboard — bobs independently of the pedestal
   baseY: number;
@@ -156,25 +158,25 @@ export function buildKingdom(
     const x = Math.cos(angle) * RING_RADIUS;
     const z = Math.sin(angle) * RING_RADIUS;
 
-    const { group, windows, art } = makeBuilding(def, texLoader, track, shadowTex);
+    const { group, visual, windows, art } = makeBuilding(def, texLoader, track, shadowTex);
     group.position.set(x, 0, z);
     group.rotation.y = -angle + Math.PI / 2; // face the plaza centre
     group.userData.buildingId = def.id;
     scene.add(group);
 
-    // Torch either side of the door.
+    // Torch either side of the door — on the visual group, so they ride the
+    // hover lift with the building.
     for (const sx of [-0.95, 0.95]) {
       const torch = makeTorch(track, torchLights);
       torch.position.set(sx, 0, 1.35);
-      group.add(torch);
+      visual.add(torch);
     }
 
-    entries.push({ def, group, windows, art, baseY: 0, hoverT: 0 });
-    // Sprites are the buildings here, and Sprite sets isSprite (never isMesh) —
-    // pick both, or the only clickable area would be the small ground halo.
+    entries.push({ def, group, visual, windows, art, baseY: 0, hoverT: 0 });
+    // Only the tagged collider picks — see makeBuilding for why the art and
+    // name-plate sprites are excluded.
     group.traverse((o) => {
-      const any = o as THREE.Mesh & THREE.Sprite;
-      if (any.isMesh || any.isSprite) pickables.push(o);
+      if (o.userData.pick) pickables.push(o);
     });
   });
 
@@ -253,8 +255,34 @@ export function buildKingdom(
   let downX = 0;
   let downY = 0;
 
+  // The canvas box only moves on resize/scroll, but pointermove fires up to
+  // 1000Hz during a drag — reading it per event forced a layout flush per
+  // event. Cache it and invalidate from the things that can actually move it.
+  //
+  // Those signals aren't complete, though: the canvas also slides when a sibling
+  // above it changes height without the canvas itself resizing (a tab unlocking,
+  // a banner appearing, the resource row rewrapping). The app re-renders 4x/sec,
+  // so a rect stale in that way stays stale — every pick lands offset and the
+  // wrong building lights up. Hence the same max-age safety net the portal
+  // renderer uses.
+  const RECT_MAX_AGE_MS = 250;
+  let canvasRect: DOMRect | null = null;
+  let canvasRectAt = 0;
+  const invalidateRect = () => {
+    canvasRect = null;
+  };
+  const rectRO = new ResizeObserver(invalidateRect);
+  rectRO.observe(renderer.domElement);
+  window.addEventListener("scroll", invalidateRect, { capture: true, passive: true });
+  window.addEventListener("resize", invalidateRect);
+
   function pick(ev: PointerEvent): BuildingEntry | null {
-    const rect = renderer.domElement.getBoundingClientRect();
+    const now = performance.now();
+    if (!canvasRect || now - canvasRectAt > RECT_MAX_AGE_MS) {
+      canvasRect = renderer.domElement.getBoundingClientRect();
+      canvasRectAt = now;
+    }
+    const rect = canvasRect;
     ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(ndc, camera);
@@ -270,16 +298,30 @@ export function buildKingdom(
     return null;
   }
 
-  const onMove = (ev: PointerEvent) => {
+  // Hover picking raycasts ~60 objects; at pointer-event rate that is pure
+  // waste since nothing can change between frames anyway. Stash the latest
+  // event and resolve it once per frame in the render loop. (Click picking
+  // below stays synchronous — a click must hit exactly what was under the
+  // cursor at pointerup, not one frame's worth of camera drift later.)
+  let pendingMove: PointerEvent | null = null;
+
+  function applyHover(ev: PointerEvent) {
     const hit = pick(ev);
     if (hit === hovered) return;
     hovered = hit;
     renderer.domElement.style.cursor = hit ? "pointer" : "grab";
     hoverCb?.(hit?.def ?? null);
+  }
+
+  const onMove = (ev: PointerEvent) => {
+    pendingMove = ev;
   };
   const onDown = (ev: PointerEvent) => {
     downX = ev.clientX;
     downY = ev.clientY;
+    // Entering the wrong building is the one misfire the player really notices,
+    // so the click's pick never runs on a cached box, however fresh.
+    invalidateRect();
   };
   const onUp = (ev: PointerEvent) => {
     // Only count as a click if the pointer barely moved (not a camera drag).
@@ -305,6 +347,13 @@ export function buildKingdom(
 
   // --- Per-frame animation. -------------------------------------------------
   const unsub = stage.onFrame((dt, t) => {
+    // Resolve at most one hover raycast per frame (see pendingMove).
+    if (pendingMove) {
+      const ev = pendingMove;
+      pendingMove = null;
+      applyHover(ev);
+    }
+
     // A camera flight owns the camera until it lands, then enters the view.
     if (flight) {
       flight.t = Math.min(1, flight.t + (dt * 1000) / FLIGHT_MS);
@@ -330,7 +379,10 @@ export function buildKingdom(
     for (const e of entries) {
       const target = e === hovered ? 1 : 0;
       e.hoverT += (target - e.hoverT) * Math.min(1, dt * 10);
-      e.group.position.y = e.hoverT * 0.35;
+      // Lift the visuals only — `group` (and with it the pick collider) holds
+      // still, so the hovered building can't rise out from under the cursor and
+      // start flickering between itself and its neighbour.
+      e.visual.position.y = e.hoverT * 0.35;
       // Gentle idle bob on the art only — a floating pedestal would read wrong.
       e.art.position.y = ART_Y + Math.sin(t * 1.15 + e.group.position.x * 1.3) * 0.06;
       e.windows.emissiveIntensity = 0.8 + e.hoverT * 1.6 + Math.sin(t * 3 + e.group.position.x) * 0.1;
@@ -355,6 +407,10 @@ export function buildKingdom(
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointerup", onUp);
+      rectRO.disconnect();
+      window.removeEventListener("scroll", invalidateRect, { capture: true });
+      window.removeEventListener("resize", invalidateRect);
+      pendingMove = null;
       if (resumeTimer) window.clearTimeout(resumeTimer);
       controls.dispose();
       dwellers.dispose();
@@ -414,11 +470,17 @@ function makeBuilding(
   texLoader: THREE.TextureLoader,
   track: <T extends { dispose: () => void }>(x: T) => T,
   shadowTex: THREE.Texture,
-): { group: THREE.Group; windows: THREE.MeshStandardMaterial; art: THREE.Sprite } {
+): { group: THREE.Group; visual: THREE.Group; windows: THREE.MeshStandardMaterial; art: THREE.Sprite } {
   const g = new THREE.Group();
 
+  // Everything visible hangs off `vis`, which is what the hover lift raises.
+  // The pick collider below stays on `g` so it never moves out from under the
+  // cursor — a lifting collider makes hover flicker on/off at the bottom edge.
+  const vis = new THREE.Group();
+  g.add(vis);
+
   // Contact shadow first, so the halo's glow sits on top of it.
-  g.add(makeContactShadow(shadowTex, 3.2, 0.85));
+  vis.add(makeContactShadow(shadowTex, 3.2, 0.85));
 
   // The building IS the painterly art: a grounded, camera-facing billboard on a
   // carved pedestal. (Primitive box+cone houses read as programmer art here.)
@@ -428,7 +490,7 @@ function makeBuilding(
   const padGeo = track(new THREE.CylinderGeometry(1.5, 1.78, BLD_BASE_Y, 8));
   const pad = new THREE.Mesh(padGeo, padMat);
   pad.position.y = BLD_BASE_Y / 2;
-  g.add(pad);
+  vis.add(pad);
 
   // Accent rim light around the pedestal — also the hover-pulse surface.
   const rimMat = track(
@@ -444,7 +506,7 @@ function makeBuilding(
   const rim = new THREE.Mesh(rimGeo, rimMat);
   rim.rotation.x = Math.PI / 2;
   rim.position.y = BLD_BASE_Y;
-  g.add(rim);
+  vis.add(rim);
 
   const iconTex = texLoader.load(def.icon, (t) => {
     // Preserve the art's aspect once the image is known, keeping its base on
@@ -461,22 +523,29 @@ function makeBuilding(
   const sprite = new THREE.Sprite(iconMat);
   sprite.scale.set(BLD_H, BLD_H, 1);
   sprite.position.set(0, ART_Y, 0);
-  g.add(sprite);
+  vis.add(sprite);
 
-  // Invisible collider: pickables only collects meshes, and the building is a
-  // sprite — without this the art itself wouldn't be hoverable/clickable.
+  // Invisible collider — the ONE pick target for this building (userData.pick).
+  //
+  // It has to be a box rather than the art itself because a Sprite raycasts as
+  // its whole camera-facing quad, transparent margins included: the art PNGs are
+  // mostly padding, so neighbouring buildings' quads overlap heavily on the ring
+  // and whichever happened to be nearer the camera stole the hover — you aimed at
+  // the Bazaar and entered the War Room. Same for the name plates, which are wide
+  // text quads. So the sprites are deliberately NOT pickable; this box is.
   const hitGeo = track(new THREE.BoxGeometry(2.8, BLD_H, 1.4));
   const hitMat = track(new THREE.MeshBasicMaterial({ visible: false }));
   const hit = new THREE.Mesh(hitGeo, hitMat);
   hit.position.y = ART_Y;
+  hit.userData.pick = true;
   g.add(hit);
 
   // Name plate above the building.
   const label = makeLabelSprite(def.name, track);
   label.position.set(0, BLD_BASE_Y + BLD_H + 0.55, 0);
-  g.add(label);
+  vis.add(label);
 
-  return { group: g, windows: rimMat, art: sprite };
+  return { group: g, visual: vis, windows: rimMat, art: sprite };
 }
 
 function makeTorch(
@@ -560,8 +629,12 @@ interface Dweller {
   runW: number;
   /** True while a one-shot flourish owns the pose. */
   busy: boolean;
-  /** How much the locomotion blend is in control (1 = fully, 0 = flourishing). */
-  locoW: number;
+  /** The flourish currently fading in/out, if any — locomotion is its complement. */
+  active: THREE.AnimationAction | null;
+  /** How much of the pose the flourish owns (0..1); locomotion gets the rest. */
+  flourishW: number;
+  /** 1 while the flourish plays, 0 once it has finished and is handing back. */
+  flourishTarget: number;
   /** Seconds of loitering left before the next flourish fires. */
   untilFlourish: number;
   target: THREE.Vector3;
@@ -666,19 +739,22 @@ class DwellerCrowd {
           moveW: 0,
           runW: 0,
           busy: false,
-          locoW: 1,
+          active: null,
+          flourishW: 0,
+          flourishTarget: 0,
           untilFlourish: 1 + Math.random() * 5,
           target: this.pickPoint(),
           speed: 1.15 + (i % 4) * 0.18,
           hurried: false,
           waiting: Math.random() * 2,
         };
-        // The flourish fades itself out; `locoW` fades locomotion back in. The
-        // two must not both drive the same weights or they'd fight each frame.
-        mixer.addEventListener("finished", (e: { action: THREE.AnimationAction }) => {
+        // One blend value drives both sides of the handover, so the flourish and
+        // the locomotion pair always sum to a full pose. The clip holds its last
+        // frame (clampWhenFinished) while it fades back out.
+        mixer.addEventListener("finished", () => {
           self.busy = false;
+          self.flourishTarget = 0;
           self.untilFlourish = 3 + Math.random() * 7;
-          e.action.fadeOut(0.3);
         });
         // Ride-along contact shadow so the kek reads as standing on the floor.
         root.add(makeContactShadow(this.shadowTex, 1.3, 0.7));
@@ -721,7 +797,12 @@ class DwellerCrowd {
           if (d.untilFlourish <= 0) {
             const f = d.flourishes[Math.floor(Math.random() * d.flourishes.length)];
             d.busy = true;
-            f.reset().setEffectiveWeight(0).fadeIn(0.25).play();
+            d.active = f;
+            d.flourishTarget = 1;
+            // No fadeIn/fadeOut here: `flourishW` below owns this action's
+            // weight outright, and three would multiply a fade interpolant into
+            // whatever we set, leaving the blend short of a full pose.
+            f.reset().setEffectiveWeight(d.flourishW).play();
           }
         }
         if (d.waiting <= 0 && !d.busy) {
@@ -756,10 +837,23 @@ class DwellerCrowd {
       // pose outright while it plays, so the whole locomotion blend backs off.
       d.moveW += ((moving ? 1 : 0) - d.moveW) * Math.min(1, dt * 8);
       d.runW += ((d.hurried ? 1 : 0) - d.runW) * Math.min(1, dt * 5);
-      d.locoW += ((d.busy ? 0 : 1) - d.locoW) * Math.min(1, dt * 6);
-      d.walk?.setEffectiveWeight(d.locoW * d.moveW * (1 - d.runW));
-      d.run?.setEffectiveWeight(d.locoW * d.moveW * d.runW);
-      d.idle?.setEffectiveWeight(d.locoW * (1 - d.moveW));
+      // Locomotion gets exactly what the flourish isn't using: the four weights
+      // always sum to 1. Any shortfall is blended toward the bind pose by three,
+      // which reads on screen as the kek snapping into a T-pose.
+      d.flourishW += (d.flourishTarget - d.flourishW) * Math.min(1, dt * 5);
+      if (d.active) {
+        d.active.setEffectiveWeight(d.flourishW);
+        // Fully handed back — stop the one-shot so it isn't sampled every frame.
+        if (d.flourishTarget === 0 && d.flourishW < 0.002) {
+          d.active.stop();
+          d.active = null;
+          d.flourishW = 0;
+        }
+      }
+      const locoW = 1 - d.flourishW;
+      d.walk?.setEffectiveWeight(locoW * d.moveW * (1 - d.runW));
+      d.run?.setEffectiveWeight(locoW * d.moveW * d.runW);
+      d.idle?.setEffectiveWeight(locoW * (1 - d.moveW));
     }
   }
 
@@ -768,6 +862,8 @@ class DwellerCrowd {
     for (const d of this.dwellers) {
       d.mixer.stopAllAction();
       this.scene.remove(d.root);
+      // Frees only what this dweller owns (its contact-shadow plane); the kek's
+      // geometry/materials belong to the loader's shared master — see loaders.
       disposeObject(d.root);
     }
     this.dwellers = [];
