@@ -3,14 +3,74 @@
 // `track` edge function, which geolocates the request IP and stores everything.
 // A stable per-browser session id ties a player's events together across visits.
 //
-// Privacy note: this reports the player's email (once they connect a wallet),
-// approximate location (derived server-side from IP), and every click. If you
-// ship this to real users you owe them a notice + consent — see the README.
+// Privacy: analytics are pseudonymous by default — a random session id, the
+// timezone, engagement time and click labels. Email/wallet are NEVER sent
+// unless the player explicitly opts in (localStorage `idle-legion-analytics-pii`
+// = "on"). Do Not Track and Global Privacy Control are honoured as a hard no,
+// and players can opt out entirely (`idle-legion-analytics` = "off").
+// Note the server still observes the request IP and geolocates it — disclose
+// that to players. See README.
 
 const BASE = (import.meta.env.VITE_INSFORGE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
 const SESSION_KEY = "idle-legion-session-id";
+const OPTOUT_KEY = "idle-legion-analytics"; // "off" = player opted out
+const PII_KEY = "idle-legion-analytics-pii"; // "on" = allow identity fields
 const FLUSH_MS = 5000;
 const MAX_BATCH = 40;
+
+/**
+ * Honour browser privacy signals and an explicit opt-out. Do Not Track and
+ * Global Privacy Control are respected as a hard "no" — nothing is queued,
+ * nothing is sent.
+ */
+export function trackingAllowed(): boolean {
+  if (!BASE) return false;
+  try {
+    const nav = navigator as Navigator & {
+      globalPrivacyControl?: boolean;
+      msDoNotTrack?: string;
+    };
+    const win = window as Window & { doNotTrack?: string };
+    if (nav.globalPrivacyControl === true) return false;
+    if (nav.doNotTrack === "1" || win.doNotTrack === "1" || nav.msDoNotTrack === "1") return false;
+    if (localStorage.getItem(OPTOUT_KEY) === "off") return false;
+  } catch {
+    /* storage unavailable — fall through to allowed */
+  }
+  return true;
+}
+
+/** Identity fields (email / wallet) are never sent unless explicitly enabled. */
+function piiAllowed(): boolean {
+  try {
+    return localStorage.getItem(PII_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function analyticsOptedOut(): boolean {
+  try {
+    return localStorage.getItem(OPTOUT_KEY) === "off";
+  } catch {
+    return false;
+  }
+}
+
+/** Player-facing opt-out. Stops the timer and drops anything already queued. */
+export function setAnalyticsOptOut(off: boolean) {
+  try {
+    localStorage.setItem(OPTOUT_KEY, off ? "off" : "on");
+  } catch {
+    /* ignore */
+  }
+  if (off) {
+    queue = [];
+    pendingActiveMs = 0;
+    pendingScreenMs = {};
+    stopTelemetry();
+  }
+}
 
 export interface TrackEvent {
   name: string;
@@ -60,7 +120,7 @@ export function identify(next: { email?: string | null; walletAddress?: string |
 }
 
 export function track(name: string, type: TrackEvent["type"] = "click", meta?: Record<string, unknown>) {
-  if (!name) return;
+  if (!name || !trackingAllowed()) return;
   queue.push({ name: name.slice(0, 200), type, ts: Date.now(), meta });
   if (queue.length >= MAX_BATCH) void flush();
 }
@@ -70,7 +130,9 @@ export function markLogin(nextEmail: string | null, wallet: string | null) {
   identify({ email: nextEmail, walletAddress: wallet });
   if (loggedIn) return;
   loggedIn = true;
-  track("login", "login", { email: nextEmail, wallet });
+  // Never leak identity through event meta — that would bypass the payload
+  // gate above. Only record THAT a login happened unless PII is opted in.
+  track("login", "login", piiAllowed() ? { email: nextEmail, wallet } : undefined);
   void flush();
 }
 
@@ -96,7 +158,7 @@ export function setScreen(name: string) {
 export async function flush(useBeacon = false): Promise<void> {
   harvestActive();
   // Always flush when there's engagement time to report, even with no events.
-  if (!BASE || (queue.length === 0 && pendingActiveMs < 1000)) return;
+  if (!trackingAllowed() || (queue.length === 0 && pendingActiveMs < 1000)) return;
   const batch = queue;
   queue = [];
   const activeMs = pendingActiveMs;
@@ -107,8 +169,9 @@ export async function flush(useBeacon = false): Promise<void> {
   newVisitPending = false;
   const payload = JSON.stringify({
     sessionId: getSessionId(),
-    email,
-    walletAddress,
+    // Identity is opt-in only. By default a session is pseudonymous: no email,
+    // no wallet address. (The server still sees the request IP — see README.)
+    ...(piiAllowed() ? { email, walletAddress } : {}),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     activeMs,
     screens,
@@ -146,7 +209,7 @@ function labelFor(el: Element): string {
 
 // Install the global listeners + periodic flush. Safe to call once.
 export function initTelemetry() {
-  if (started || !BASE) return;
+  if (started || !trackingAllowed()) return;
   started = true;
   getSessionId();
   newVisitPending = true;

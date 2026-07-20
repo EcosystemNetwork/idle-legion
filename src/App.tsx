@@ -136,6 +136,7 @@ import {
   MIRROR_STREAK_DAY,
   SCRYING_MIRROR_SUPPLY,
 } from "./game/streak";
+import { nextUnlock, tabUnlock } from "./game/unlocks";
 import { operatorId } from "./lib/insforge";
 import {
   ARENA_ONLINE,
@@ -150,7 +151,7 @@ import "./App.css";
 import { burst, centerOf, coinArc, floatText, ring, sfx, shake } from "./fx/juice";
 import { useCountUp, useTabTitleEarnings, useUiSounds } from "./fx/react";
 import { MuteButton } from "./fx/MuteButton";
-import { flush, identify, initTelemetry, markLogin, setScreen } from "./lib/telemetry";
+import { analyticsOptedOut, flush, identify, initTelemetry, markLogin, setAnalyticsOptOut, setScreen } from "./lib/telemetry";
 
 const GOLD_CHIP = ".chip-stat.gold";
 
@@ -298,6 +299,29 @@ function ModelBoss({ src }: { src: string }) {
   );
 }
 
+// Visible analytics disclosure + one-click opt-out. Players can't consent to
+// what they can't see, and the server geolocates the request IP.
+function PrivacyNote() {
+  const [off, setOff] = useState(() => analyticsOptedOut());
+  return (
+    <span className="privacy-note">
+      Anonymous gameplay analytics (session id, screen time, click labels; your
+      IP is geolocated server-side). No email or wallet is sent.{" "}
+      <button
+        type="button"
+        className="link-btn"
+        onClick={() => {
+          const next = !off;
+          setAnalyticsOptOut(next);
+          setOff(next);
+        }}
+      >
+        {off ? "Analytics off — turn on" : "Opt out"}
+      </button>
+    </span>
+  );
+}
+
 // ---------------- App ----------------
 
 export default function App() {
@@ -318,6 +342,9 @@ export default function App() {
   >(null);
   const [mirrorBusy, setMirrorBusy] = useState(false);
   const [jackpot, setJackpot] = useState(false);
+
+  // Progressive unlocks: the next system to work toward (null once all are open).
+  const nextTab = nextUnlock(state, stats.might);
 
   useUiSounds();
   useTabTitleEarnings(stats.goldPerSec, stats.fed);
@@ -380,6 +407,12 @@ export default function App() {
       setMirrorBusy(false);
     }
   }, [mirrorBusy, mirror.serial, mirror.soldOut, actions, walletIdentity]);
+
+  // If the active tab is no longer unlocked (e.g. straight after a Descend),
+  // fall back home rather than rendering a system the player can't see.
+  useEffect(() => {
+    if (tab !== "operator" && !tabUnlock(state, stats.might, tab).unlocked) setTab("kingdom");
+  }, [tab, state, stats.might]);
 
   // Cross-device ownership sync: when an account connects, ask the mirror whether
   // this identity already holds one (claimed on another device) — no minting.
@@ -511,7 +544,11 @@ export default function App() {
             ["market", "🏛️ Market"],
             ["codex", "📜 Codex"],
           ] as const
-        ).map(([id, label]) => (
+        )
+          // Progressive unlocks: hide systems the player hasn't earned yet, so a
+          // new legion sees 3 tabs instead of 11. (See game/unlocks.ts.)
+          .filter(([id]) => tabUnlock(state, stats.might, id).unlocked)
+          .map(([id, label]) => (
           <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
             {label}
             {id === "market" && state.mercenaryBoost > 0 && <i className="dot" />}
@@ -520,6 +557,11 @@ export default function App() {
             {id === "worldboss" && state.worldBoss.lastReward && <i className="dot" />}
           </button>
         ))}
+        {nextTab && (
+          <span className="tab-locked" title={nextTab.hint}>
+            🔒 {nextTab.hint}
+          </span>
+        )}
         {mirror.serial != null && (
           <button className={`op-tab ${tab === "operator" ? "active" : ""}`} onClick={() => setTab("operator")}>
             🔮 Operator
@@ -654,6 +696,8 @@ export default function App() {
         <p>
           UXMaxx · Universal Accounts track · original Idle Legion build · EIP-7702 chain-abstracted
           EOA · settlement on Arbitrum
+          <br />
+          <PrivacyNote />
         </p>
         <button type="button" className="btn ghost" onClick={() => actions.reset()}>
           Reset save

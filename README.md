@@ -148,6 +148,22 @@ await ua.createTransferTransaction({
 - Fund amount default `0.1` USDT — use small amounts on mainnet Primary Assets.
 - In-fiction, bridges are dead (they caused the Rug); the Universal Account is the *only* cross-chain magic — that's why chain abstraction is the whole point, not a bolt-on.
 
+## Privacy — analytics
+
+The live build sends **pseudonymous** gameplay analytics to an InsForge edge function:
+a random per-browser session id, timezone, engagement/screen dwell time, and click
+labels. The server also sees the request IP and **geolocates it**.
+
+- **No email and no wallet address are sent.** Identity is opt-in only
+  (`localStorage['idle-legion-analytics-pii'] = "on"`).
+- **Do Not Track** and **Global Privacy Control** are honoured as a hard opt-out —
+  nothing is queued or transmitted.
+- Players can opt out entirely from the footer link
+  (`localStorage['idle-legion-analytics'] = "off"`).
+
+If you point this at real users, pair it with a proper consent flow for your
+jurisdiction; IP geolocation is personal data under GDPR.
+
 ## Links
 
 - Particle UA docs: https://developers.particle.network/universal-accounts/cha/overview
