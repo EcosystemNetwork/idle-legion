@@ -134,8 +134,10 @@ export const DEX_SEED_GOLD = 12_000;
 export const DEX_SEED_LEGION = 12_000;
 
 // ---------- Bank (single-stake $LEGION → real-yield emissions) ----------
-/** $LEGION yielded per second per $LEGION staked (base emission). */
-export const BANK_YIELD_PER_SEC = 0.0009; // ~7.8%/day
+/** $LEGION yielded per second per $LEGION staked (base emission).
+ *  0.0000009/s × 86,400 = ~7.8%/day. (Was 0.0009 — a 1000× typo that paid 77×
+ *  the principal per DAY and made every $LEGION sink meaningless.) */
+export const BANK_YIELD_PER_SEC = 0.0000009; // ~7.8%/day
 /** Anti-mercenary withdrawal fee decays with time staked (DFK schedule). */
 export const BANK_FEE_SCHEDULE: { underMs: number; fee: number }[] = [
   { underMs: 60_000, fee: 0.25 }, // < 1 min
@@ -158,7 +160,9 @@ export const LAND_YIELD: Record<
   gold: 6,
   provisions: 1.2,
   salves: 0.5,
-  legion: 0.12,
+  // ~20 $LEGION/day per level — a ~2-day payback on the 40-$LEGION claim, and the
+  // same order as ladder/boss income. (Was 0.12 = 10,368/day, ~500× every sink.)
+  legion: 0.00023,
   might: 40, // "might" parcels are a flat boost per level, not a per-sec resource
 };
 export const LAND_KIND_META: Record<

@@ -96,12 +96,66 @@ export default async function (req: Request): Promise<Response> {
   }
 
   // op === "sync": push my snapshot, return live opponents + my rank.
-  const rating = Math.max(600, Math.round(Number(body.rating) || 1000));
-  const power = Math.max(1, Math.round(Number(body.power) || 20));
+  //
+  // INTEGRITY: rating/wins/losses arrive from the client, so we never store them
+  // verbatim — otherwise anyone could post `rating: 99999` and own the global
+  // board. The server keeps the prior authoritative row and admits only a delta
+  // no larger than perfect play could have produced since the last sync
+  // (attacks/day × ELO K-factor). Cheating collapses to "played optimally".
+  const DAILY_ATTACKS = 6; // mirrors client PVP_DAILY_ATTACKS
+  const K = 32; // ELO K-factor
+  const DAY_MS = 86_400_000;
+  const nowMs = Date.now();
+
+  const { data: priorRow } = await admin.database
+    .from("duel_ladder")
+    .select("rating,power,wins,losses,updated_at")
+    .eq("player_key", playerKey)
+    .maybeSingle();
+
+  const claimedRating = Math.round(Number(body.rating));
+  const claimedWins = Math.round(Number(body.wins));
+  const claimedLosses = Math.round(Number(body.losses));
+  const claimedPower = Math.round(Number(body.power));
+
+  let rating: number;
+  let wins: number;
+  let losses: number;
+  let power: number;
+
+  if (!priorRow) {
+    // First sight of this player: always seed at the fixed start rating.
+    rating = 1000;
+    wins = 0;
+    losses = 0;
+    power = Math.min(Math.max(1, Number.isFinite(claimedPower) ? claimedPower : 20), 5_000);
+  } else {
+    const prevRating = Number(priorRow.rating) || 1000;
+    const prevWins = Number(priorRow.wins) || 0;
+    const prevLosses = Number(priorRow.losses) || 0;
+    const prevPower = Number(priorRow.power) || 20;
+    const lastAt = priorRow.updated_at ? Date.parse(priorRow.updated_at) : nowMs;
+    const days = Math.max(0, (nowMs - lastAt) / DAY_MS);
+
+    // Rating may move at most the perfect-play rate (always ≥1 duel of slack so a
+    // legitimate duel right after a sync isn't clipped).
+    const budget = Math.max(K, Math.ceil(days * DAILY_ATTACKS * K));
+    const target = Number.isFinite(claimedRating) ? claimedRating : prevRating;
+    rating = Math.max(600, Math.min(prevRating + budget, Math.max(prevRating - budget, target)));
+
+    // Win/loss counts are monotonic and bounded by the same duel budget.
+    const fights = Math.max(1, Math.ceil(days * DAILY_ATTACKS));
+    wins = Math.min(prevWins + fights, Math.max(prevWins, Number.isFinite(claimedWins) ? claimedWins : prevWins));
+    losses = Math.min(prevLosses + fights, Math.max(prevLosses, Number.isFinite(claimedLosses) ? claimedLosses : prevLosses));
+
+    // Power drives matchmaking — bound its growth by TIME, not per-sync, or a
+    // client that syncs in a loop could double it every call.
+    const powerCeiling = Math.min(1_000_000, Math.max(50, prevPower * (1 + 2 * days) + 50));
+    power = Math.min(Math.max(1, Number.isFinite(claimedPower) ? claimedPower : prevPower), powerCeiling);
+  }
+
   const combatClass = ["melee", "ranged", "charge"].includes(body.combatClass) ? body.combatClass : "melee";
   const name = String(body.name || "Legion").slice(0, 40);
-  const wins = Math.max(0, Math.round(Number(body.wins) || 0));
-  const losses = Math.max(0, Math.round(Number(body.losses) || 0));
 
   await admin.database.from("duel_ladder").upsert(
     [{ player_key: playerKey, name, rating, power, combat_class: combatClass, wins, losses, updated_at: new Date().toISOString() }],

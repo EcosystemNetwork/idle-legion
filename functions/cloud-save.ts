@@ -17,6 +17,37 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
+/** Upper bounds for a plausible save. Generous — this catches the absurd, not the
+ *  merely lucky. */
+const CEIL: Record<string, number> = {
+  gold: 1e15,
+  legion: 1e12,
+  provisions: 1e12,
+  salves: 1e9,
+  lunchboxes: 1e6,
+  renown: 1e6,
+  descents: 1e5,
+};
+
+function finiteInRange(v: unknown, max: number): boolean {
+  if (v == null) return true; // absent is fine (older saves / optional fields)
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= max;
+}
+
+/** Returns a reason string when the state is implausible, else null. */
+function validateState(s: Record<string, unknown>): string | null {
+  for (const [key, max] of Object.entries(CEIL)) {
+    if (!finiteInRange(s[key], max)) return `${key} out of range`;
+  }
+  if (Array.isArray(s.dwellers) && s.dwellers.length > 500) return "roster too large";
+  if (Array.isArray(s.gear) && s.gear.length > 5_000) return "armory too large";
+  if (Array.isArray(s.land) && s.land.length > 64) return "too many parcels";
+  const bank = s.bank as Record<string, unknown> | undefined;
+  if (bank && !finiteInRange(bank.staked, CEIL.legion)) return "bank.staked out of range";
+  return null;
+}
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -63,6 +94,17 @@ export default async function (req: Request): Promise<Response> {
     const state = body.state;
     if (state == null || typeof state !== "object") return json({ error: "state required" }, 400);
     if (JSON.stringify(state).length > MAX_STATE_BYTES) return json({ error: "state too large" }, 413);
+
+    // INTEGRITY: the save is client-authored, so bound it. This can't make a
+    // single-player save "honest" (only a server-side sim could), but it rejects
+    // the absurd — Infinity/NaN/1e308 gold, impossible rosters — so a forged save
+    // can't poison analytics or the shared systems it feeds. Competitive standing
+    // deliberately does NOT come from here: the world-boss contribution and the
+    // duel ladder keep their own server-owned rows.
+    // NB: no monotonicity checks — Descend (prestige) legitimately resets
+    // lifetime totals, and a player-initiated reset legitimately zeroes them.
+    const bad = validateState(state);
+    if (bad) return json({ error: "state rejected", reason: bad }, 422);
 
     const savedAt = Math.max(0, Number(body.savedAt) || 0);
     const email = body.email ? String(body.email).slice(0, 320) : null;
