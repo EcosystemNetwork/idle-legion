@@ -508,7 +508,8 @@ const B = import.meta.env.BASE_URL;
 
 export const KEKIUS_MODEL = `${B}art/kekius-boss.glb`;
 
-// Cohesive art kit (sliced from Rex's sheets) — the Gladiator Frog Empire look.
+// Cohesive art kit (sliced from Rex's sheets) — the Gladiator Pepe Empire look.
+// Canon: these are Pepes (sons of Kek), not generic frogs. See LORE.md §4.
 export const KIT = {
   mapIso: `${B}art/kit/map-iso.png`,
   wheel: `${B}art/kit/map-wheel.png`,

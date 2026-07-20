@@ -40,7 +40,14 @@ export default function GameWorld({ onEnter, dwellers, fallback }: GameWorldProp
     let stage: ReturnType<typeof createStage> | null = null;
     let handle: KingdomHandle | null = null;
     try {
-      stage = createStage(host, { fov: 42, far: 200, exposure: 1.12 });
+      // Bloom makes the crystal, torches and building halos glow; the engine
+      // skips it on the low tier and drops it if the frame rate can't hold.
+      stage = createStage(host, {
+        fov: 42,
+        far: 200,
+        exposure: 1.12,
+        bloom: { strength: 0.55, radius: 0.6, threshold: 0.72 },
+      });
       handle = buildKingdom(stage, {
         onEnter: (id) => onEnterRef.current(id),
         dwellers,
@@ -78,7 +85,7 @@ export default function GameWorld({ onEnter, dwellers, fallback }: GameWorldProp
       {!ready && <div className="gw-veil" aria-label="Entering the kingdom…" />}
       <div className="gw-head">
         <h2>Underground Kingdom</h2>
-        <span>— Gladiator Frog Empire —</span>
+        <span>— Gladiator Pepe Empire —</span>
       </div>
       <div className={`gw-tip${hover ? " show" : ""}`}>
         {hover ? (

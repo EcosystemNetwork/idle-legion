@@ -1,5 +1,5 @@
-import { createElement, type ReactNode } from "react";
-import "@google/model-viewer";
+import type { ReactNode } from "react";
+import Actor from "./Actor";
 import { FROG_MODEL, INTERIOR } from "../game/interiors";
 
 // A Fallout-Shelter-style room: the painterly interior backdrop with dwellers
@@ -30,32 +30,31 @@ export function RoomScene({
 // A single animated 3D frog dweller standing in a room. `anim` picks a clip
 // from the consolidated GLB. Real clips: Idle, Walk, Run, Attack, ComboAttack,
 // Spin, Taunt, Dance, Arise, Dead.
-// One <model-viewer> per frog is GPU-heavy — use for a few featured dwellers,
-// not a whole crowd (use FrogChip 2D for the rest).
+// Rendered through the shared-context portal renderer, so a stronghold full of
+// these costs ONE WebGL context in total rather than one apiece.
 export function RoomFrog({
   anim,
+  breaks,
   size = 150,
   onClick,
 }: {
   anim?: string;
+  /** One-shot flourishes played between loops of `anim`. */
+  breaks?: string[];
   size?: number;
   onClick?: () => void;
 }) {
-  return createElement("model-viewer", {
-    src: FROG_MODEL,
-    alt: "frog dweller",
-    autoplay: true,
-    ...(anim ? { "animation-name": anim } : {}),
-    "camera-controls": false,
-    "disable-zoom": true,
-    "disable-pan": true,
-    "interaction-prompt": "none",
-    "shadow-intensity": "0.7",
-    exposure: "1.1",
-    "camera-orbit": "0deg 87deg 3.2m",
-    "field-of-view": "26deg",
-    loading: "eager",
-    onClick,
-    style: { width: `${size}px`, height: `${size * 1.15}px`, cursor: onClick ? "pointer" : "default" },
-  });
+  return (
+    <Actor
+      src={FROG_MODEL}
+      anim={anim}
+      breaks={breaks}
+      fov={26}
+      zoom={2}
+      aim={0.5}
+      onClick={onClick}
+      title="Pepe legionary"
+      style={{ width: size, height: size * 1.15 }}
+    />
+  );
 }

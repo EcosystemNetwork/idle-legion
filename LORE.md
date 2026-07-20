@@ -118,6 +118,14 @@ Every legion prays to the same laurel-crowned face. His name is **Kekius
 Maximus**, and whether he was a real emperor, a real gladiator, or just a really
 good post, nobody living can tell you.
 
+> **The name, decoded.** *Kekius* is of **Kek** — the old frog-god of the
+> pre-Rug boards, the one the anons called **Pepe**. *Maximus* is Rome: laurel,
+> sand, and a sword. Put them together and you get the whole joke and the whole
+> canon in two words — **a Pepe in a laurel crown.** That is why every gladiator
+> of the deep wears a frog's face: they are not "frogs," they are **Pepes**, sons
+> of Kek, and their banner is the **Pepe Empire**. Never write "frog empire" — the
+> deep is the Pepe Empire, and its emperor is Kekius Maximus.
+
 **The legend, as the Great Hall tells it:**
 
 Before the Rug, Kekius Maximus was champion of the greatest arena on the greatest
